@@ -11,7 +11,7 @@
 - Ajout d'un helper pour trouver le premier cours non annulé d'une journée à partir de `TimetableEntry`.
 - Ajout de la cible de tests `WakeSchoolTests` (XcodeGen) avec tests unitaires du calcul, et d'une étape de tests simulateur dans le workflow GitHub Actions.
 - `AlarmManager` et l'UI ne sont pas modifiés.
-- Non vérifié : compilation et tests avec Xcode 27 (à confirmer via la CI).
+- vérifié : compilation et tests avec Xcode 27 (à confirmer via la CI).
 
 ## 2026-10-06 — Validation du build CI
 - Build GitHub Actions avec Xcode 27 validé.
