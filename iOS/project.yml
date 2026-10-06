@@ -1,0 +1,25 @@
+name: WakeSchool
+options:
+  bundleIdPrefix: com.ayoub
+  deploymentTarget:
+    iOS: "27.0"
+targets:
+  WakeSchool:
+    type: application
+    platform: iOS
+    sources:
+      - path: WakeSchool
+        excludes:
+          - "Info.plist"
+    info:
+      path: WakeSchool/Info.plist
+      properties:
+        CFBundleDisplayName: WakeSchool
+        UILaunchScreen: {}
+        NSAlarmKitUsageDescription: "WakeSchool programme ton réveil en fonction de ton emploi du temps."
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ayoub.wakeschool
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO

@@ -1,0 +1,10 @@
+.DS_Store
+*.xcodeproj/
+xcuserdata/
+build/
+DerivedData/
+*.ipa
+*.p12
+*.mobileprovision
+.env
+Secrets.xcconfig
