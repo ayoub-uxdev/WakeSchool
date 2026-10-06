@@ -80,3 +80,25 @@ jobs:
           path: iOS/WakeSchool-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
+
+      - name: Lancer les tests unitaires (simulateur)
+        working-directory: iOS
+        run: |
+          set -o pipefail
+
+          xcrun simctl list devices available
+          DEVICE_ID=$(xcrun simctl list devices available iPhone \
+            | grep -Eo '[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}' | head -1)
+
+          if [ -z "$DEVICE_ID" ]; then
+            echo "Aucun simulateur iPhone disponible"
+            exit 1
+          fi
+          echo "Simulateur utilisé : $DEVICE_ID"
+
+          xcodebuild test \
+            -project WakeSchool.xcodeproj \
+            -scheme WakeSchool \
+            -destination "id=$DEVICE_ID" \
+            -derivedDataPath build-tests \
+            CODE_SIGNING_ALLOWED=NO

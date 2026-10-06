@@ -23,3 +23,18 @@ targets:
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: NO
+    scheme:
+      testTargets:
+        - WakeSchoolTests
+  WakeSchoolTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: WakeSchoolTests
+    dependencies:
+      - target: WakeSchool
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ayoub.wakeschool.tests
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: YES

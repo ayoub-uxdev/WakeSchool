@@ -7,12 +7,12 @@
 - AlarmManager (code écrit)
 - Protocole PronoteClient
 - Workflow GitHub Actions + XcodeGen
-
-## En cours
 - Vérifier la compilation sur GitHub Actions avec Xcode 27
 
+## En cours
+- Calcul de l'heure de réveil recommandée : code et tests unitaires écrits (Services/WakeTimeCalculator.swift, WakeSchoolTests/), validation du build CI Xcode 27 à confirmer
+
 ## Prochaines (après validation)
-- Calcul de l'heure de réveil recommandée
 - Écran de test AlarmKit dans WakeSchool
 - Dashboard réel avec données de démonstration
 

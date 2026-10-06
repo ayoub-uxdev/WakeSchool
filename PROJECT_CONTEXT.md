@@ -14,7 +14,7 @@ Build : GitHub Actions + Xcode 27 depuis Windows. Le projet Xcode est généré 
 Ayoub (chef de projet, tests iPhone, validation) · ChatGPT (architecture, sécurité, consignes) · Claude (développeur principal) · Gemini (assets non réalistes) · Grok (assets réalistes).
 
 ## État actuel
-Squelette uniquement : structure, documentation, app SwiftUI minimale, modèles de base, AlarmManager, protocole PronoteClient. Compilation CI non encore vérifiée (voir CHANGELOG).
+Squelette uniquement : structure, documentation, app SwiftUI minimale, modèles de base, AlarmManager, protocole PronoteClient. Compilation CI avec Xcode 27 validée (build GitHub Actions + XcodeGen + IPA non signée, voir CHANGELOG).
 
 ## Décisions importantes
 - AlarmKit validé sur appareil réel via le prototype AlarmTest ; toute la logique reste isolée dans `Alarm/AlarmManager.swift`.
