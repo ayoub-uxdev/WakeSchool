@@ -15,7 +15,8 @@ Ayoub (chef de projet, tests iPhone, validation) · ChatGPT (architecture, sécu
 
 ## État actuel
 Base du projet en place : structure, documentation, app SwiftUI minimale (Dashboard placeholder), modèles de base, AlarmManager, protocole PronoteClient. Validé sur GitHub Actions avec Xcode 27 : build, génération du projet par XcodeGen, IPA non signée (voir CHANGELOG).
-Fonctionnalités validées : `WakeTimeCalculator` (`Services/WakeTimeCalculator.swift`, calcul pur de l'heure de réveil recommandée, sans AlarmKit) et sa cible de tests `WakeSchoolTests` (tests unitaires exécutés avec succès sur simulateur dans GitHub Actions). Le calculateur n'est pas encore branché à `AlarmManager` ni à l'UI.
+Fonctionnalités validées : `WakeTimeCalculator` (`Services/WakeTimeCalculator.swift`, calcul pur de l'heure de réveil recommandée, sans AlarmKit) et sa cible de tests `WakeSchoolTests` (tests unitaires exécutés avec succès sur simulateur dans GitHub Actions). Le calculateur n'est pas encore branché à `AlarmManager`.
+Écran « Réveil intelligent » (`UI/SmartAlarmView.swift`) ajouté avec des données de démonstration, accessible via un `TabView` dans `RootView` : il affiche les horaires calculés par `WakeTimeCalculator` mais ne programme aucune alarme. Validation du build et des tests sur GitHub Actions à confirmer.
 
 ## Décisions importantes
 - AlarmKit validé sur appareil réel via le prototype AlarmTest ; toute la logique reste isolée dans `Alarm/AlarmManager.swift`.

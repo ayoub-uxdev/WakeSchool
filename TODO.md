@@ -11,7 +11,7 @@
 - Calcul de l'heure de réveil recommandée : `Services/WakeTimeCalculator.swift` et tests unitaires `WakeSchoolTests/` implémentés ; build Xcode 27 et tests simulateur validés sur GitHub Actions
 
 ## En cours
-
+- Écran « Réveil intelligent » (`UI/SmartAlarmView.swift`, données de démonstration, calcul via `WakeTimeCalculator`, alarme non programmée) : code et tests écrits, validation du build et des tests sur GitHub Actions à confirmer
 
 ## Prochaines (après validation)
 - Écran de test AlarmKit dans WakeSchool

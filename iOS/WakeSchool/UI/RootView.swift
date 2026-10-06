@@ -2,6 +2,11 @@ import SwiftUI
 
 struct RootView: View {
     var body: some View {
-        DashboardView()
+        TabView {
+            DashboardView()
+                .tabItem { Label("Accueil", systemImage: "house.fill") }
+            SmartAlarmView()
+                .tabItem { Label("Réveil", systemImage: "alarm.fill") }
+        }
     }
 }
