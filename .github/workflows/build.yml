@@ -1,34 +1,82 @@
 name: Build WakeSchool
+
 on:
   push:
+    branches: [main]
   workflow_dispatch:
+
 jobs:
   build:
-    runs-on: macos-latest   # reprendre le runner utilisé par AlarmTest si différent
+    runs-on: xcode-27
+
     steps:
-      - uses: actions/checkout@v4
-      # Reprendre ici l'étape de sélection de Xcode 27 du build.yml d'AlarmTest
-      - name: Sélection Xcode 27
-        run: sudo xcode-select -s /Applications/Xcode_27.app || true
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Vérifier Xcode 27
+        run: |
+          xcode-select -p
+          xcodebuild -version
+
       - name: Installer XcodeGen
         run: brew install xcodegen
+
       - name: Générer le projet Xcode
         working-directory: iOS
-        run: xcodegen generate
-      - name: Compiler (sans signature)
+        run: |
+          xcodegen generate
+          ls -la
+          test -f WakeSchool.xcodeproj/project.pbxproj
+
+      - name: Compiler avec Xcode 27 (sans signature)
         working-directory: iOS
         run: |
-          xcodebuild -project WakeSchool.xcodeproj -scheme WakeSchool \
-            -sdk iphoneos -configuration Release \
+          set -o pipefail
+
+          xcodebuild build \
+            -project WakeSchool.xcodeproj \
+            -scheme WakeSchool \
+            -configuration Debug \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Vérifier l'application
+        working-directory: iOS
+        run: |
+          APP_PATH="build/Build/Products/Debug-iphoneos/WakeSchool.app"
+
+          if [ ! -d "$APP_PATH" ]; then
+            echo "WakeSchool.app introuvable à $APP_PATH"
+            ls -R build/Build/Products || true
+            exit 1
+          fi
+
+          echo "WakeSchool.app trouvée."
+          du -sh "$APP_PATH"
+
       - name: Créer l'IPA non signée
         working-directory: iOS
         run: |
-          mkdir -p Payload
-          cp -R build/Build/Products/Release-iphoneos/WakeSchool.app Payload/
-          zip -qr WakeSchool.ipa Payload
-      - uses: actions/upload-artifact@v4
+          APP_PATH="build/Build/Products/Debug-iphoneos/WakeSchool.app"
+
+          rm -rf Payload WakeSchool-unsigned.ipa
+          mkdir Payload
+          cp -R "$APP_PATH" Payload/
+
+          ditto -c -k --sequesterRsrc --keepParent \
+            Payload WakeSchool-unsigned.ipa
+
+          ls -lh WakeSchool-unsigned.ipa
+          unzip -l WakeSchool-unsigned.ipa | head -20
+
+      - name: Publier l'IPA non signée
+        uses: actions/upload-artifact@v4
         with:
           name: WakeSchool-unsigned-ipa
-          path: iOS/WakeSchool.ipa
+          path: iOS/WakeSchool-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
