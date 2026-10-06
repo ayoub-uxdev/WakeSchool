@@ -1,40 +1,49 @@
 import SwiftUI
+import UIKit
 
-/// Écran « Réveil intelligent » : affiche, avec des données de démonstration,
-/// l'heure de départ et l'heure de réveil recommandées par `WakeTimeCalculator`.
-/// Aucune alarme n'est programmée à cette étape.
+/// Écran « Réveil intelligent » : affiche le réveil recommandé par `WakeTimeCalculator`
+/// (à partir de l'emploi du temps du store) et le programme comme alarme système via AlarmKit.
+/// L'autorisation n'est demandée que lorsque l'utilisateur appuie sur « Programmer ce réveil ».
+@MainActor
 struct SmartAlarmView: View {
-    private let outcome: Result<WakeTimeRecommendation, Error>
-
-    init(day: Date = Date(), calendar: Calendar = .current) {
-        self.outcome = SmartAlarmDemo.recommendation(for: day, calendar: calendar)
-    }
+    @EnvironmentObject private var store: SchoolDataStore
+    @StateObject private var controller = SmartAlarmController.live()
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
+        let now = Date()
+        let recommendation = SmartAlarmController.recommendation(entries: store.snapshot.timetable,
+                                                                 now: now,
+                                                                 settings: store.wakeSettings)
+        let validation = SmartAlarmController.validate(recommendation, now: now)
+
         ZStack {
-            LinearGradient(colors: [.indigo.opacity(0.9), .black],
-                           startPoint: .topLeading, endPoint: .bottomTrailing)
-                .ignoresSafeArea()
+            WakeTheme.background.ignoresSafeArea()
 
             ScrollView {
                 VStack(spacing: 20) {
                     header
 
-                    switch outcome {
-                    case .success(let recommendation):
+                    if let recommendation {
                         heroCard(recommendation)
                         timelineCard(recommendation)
-                    case .failure(let error):
+                    }
+                    if case .failure(let error) = validation {
                         errorCard(error)
                     }
 
                     parametersCard
-                    scheduleSection
+                    scheduleSection(recommendation: recommendation, validation: validation)
                 }
                 .padding(20)
             }
         }
         .foregroundStyle(.white)
+        .task { controller.refresh() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { controller.refresh() }
+        }
     }
 
     // MARK: - Sections
@@ -45,7 +54,7 @@ struct SmartAlarmView: View {
                 .font(.system(size: 40))
             Text("Réveil intelligent")
                 .font(.largeTitle.bold())
-            Text("Données de démonstration")
+            Text(store.dataSource == .demo ? "Données de démonstration" : "Données de l'établissement")
                 .font(.caption.weight(.semibold))
                 .padding(.horizontal, 12)
                 .padding(.vertical, 5)
@@ -66,6 +75,8 @@ struct SmartAlarmView: View {
                 Text(Self.timeString(recommendation.wakeTime))
                     .font(.system(size: 76, weight: .bold, design: .rounded))
                     .monospacedDigit()
+                Text(Self.dayString(recommendation.wakeTime))
+                    .font(.subheadline.weight(.semibold))
                 Text("\(leadMinutes) min avant le premier cours")
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.7))
@@ -89,16 +100,17 @@ struct SmartAlarmView: View {
     }
 
     private var parametersCard: some View {
-        Card {
+        let settings = store.wakeSettings
+        return Card {
             VStack(alignment: .leading, spacing: 14) {
                 Text("Paramètres")
                     .font(.headline)
                 InfoRow(symbol: "bus.fill", title: "Temps de trajet",
-                        value: "\(SmartAlarmDemo.travelMinutes) min", tint: .blue)
+                        value: "\(settings.travelMinutes) min", tint: .blue)
                 InfoRow(symbol: "hourglass", title: "Temps de préparation",
-                        value: "\(SmartAlarmDemo.preparationMinutes) min", tint: .purple)
+                        value: "\(settings.preparationMinutes) min", tint: .purple)
                 InfoRow(symbol: "shield.fill", title: "Marge de sécurité",
-                        value: "\(SmartAlarmDemo.safetyMarginMinutes) min", tint: .pink)
+                        value: "\(settings.safetyMarginMinutes) min", tint: .pink)
             }
         }
     }
@@ -109,7 +121,7 @@ struct SmartAlarmView: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.title)
                     .foregroundStyle(.yellow)
-                Text("Calcul impossible")
+                Text("Réveil indisponible")
                     .font(.headline)
                 Text(error.localizedDescription)
                     .font(.subheadline)
@@ -120,23 +132,96 @@ struct SmartAlarmView: View {
         }
     }
 
-    private var scheduleSection: some View {
-        VStack(spacing: 8) {
-            Button {
-                // Volontairement vide : la programmation réelle de l'alarme
-                // (AlarmManager) sera ajoutée dans une tâche dédiée.
-            } label: {
-                Label("Programmer ce réveil", systemImage: "alarm.fill")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .tint(.indigo)
-            .disabled(true)
+    private func scheduleSection(recommendation: WakeTimeRecommendation?,
+                                 validation: Result<Date, Error>) -> some View {
+        let canSchedule: Bool = {
+            if case .success = validation { return true }
+            return false
+        }()
+        let alreadyScheduledForThisTime = controller.scheduledAlarm?.fireDate == recommendation?.wakeTime
 
-            Text("La programmation de l'alarme n'est pas encore disponible.")
-                .font(.footnote)
-                .foregroundStyle(.white.opacity(0.6))
+        return VStack(spacing: 14) {
+            if let alarm = controller.scheduledAlarm {
+                scheduledCard(alarm)
+            }
+            if let issue = controller.issue {
+                issueCard(issue)
+            }
+
+            if !alreadyScheduledForThisTime {
+                Button {
+                    Task { await controller.schedule(recommendation) }
+                } label: {
+                    HStack {
+                        if controller.isWorking { ProgressView().tint(.white) }
+                        Label(controller.scheduledAlarm == nil ? "Programmer ce réveil" : "Reprogrammer ce réveil",
+                              systemImage: "alarm.fill")
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .tint(.indigo)
+                .disabled(!canSchedule || controller.isWorking)
+            }
+        }
+    }
+
+    private func scheduledCard(_ alarm: ScheduledAlarm) -> some View {
+        Card {
+            VStack(spacing: 12) {
+                HStack(spacing: 14) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.title)
+                        .foregroundStyle(.mint)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Réveil programmé")
+                            .font(.headline)
+                        Text("\(Self.dayString(alarm.fireDate)) à \(Self.timeString(alarm.fireDate))")
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.7))
+                    }
+                    Spacer()
+                }
+                Button(role: .destructive) {
+                    controller.cancel()
+                } label: {
+                    Label("Annuler le réveil", systemImage: "xmark.circle")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func issueCard(_ issue: SmartAlarmIssue) -> some View {
+        Card {
+            VStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.title)
+                    .foregroundStyle(.yellow)
+                switch issue {
+                case .permissionDenied:
+                    Text(AlarmError.notAuthorized.localizedDescription)
+                        .font(.subheadline)
+                        .multilineTextAlignment(.center)
+                    Button {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            openURL(url)
+                        }
+                    } label: {
+                        Label("Ouvrir les Réglages", systemImage: "gearshape.fill")
+                    }
+                    .buttonStyle(.bordered)
+                case .message(let text):
+                    Text(text)
+                        .font(.subheadline)
+                        .multilineTextAlignment(.center)
+                }
+            }
+            .frame(maxWidth: .infinity)
         }
     }
 
@@ -145,6 +230,10 @@ struct SmartAlarmView: View {
     /// Heure au format HH:mm.
     private static func timeString(_ date: Date) -> String {
         date.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
+    }
+
+    private static func dayString(_ date: Date) -> String {
+        date.formatted(.dateTime.weekday(.wide).day().month(.wide))
     }
 }
 
@@ -190,5 +279,3 @@ private struct InfoRow: View {
         .accessibilityElement(children: .combine)
     }
 }
-
-#Preview { SmartAlarmView() }

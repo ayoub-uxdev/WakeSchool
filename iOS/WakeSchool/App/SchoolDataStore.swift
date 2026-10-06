@@ -19,6 +19,7 @@ final class SchoolDataStore: ObservableObject {
     }
 
     var wakeSettings: WakeSettings { environment.preferences.wakeSettings }
+    var dataSource: DataSourceKind { environment.preferences.dataSource }
 
     /// Affiche tout de suite le cache local, puis synchronise. Ne s'exécute qu'une fois.
     func start() async {

@@ -59,6 +59,17 @@ final class AlarmManager {
     }
 
     func cancel(id: UUID) throws {
-        try system.cancel(id: id)
+        do {
+            try system.cancel(id: id)
+        } catch {
+            throw AlarmError.cancelFailed(error)
+        }
+    }
+
+    /// Indique si l'alarme `id` est toujours connue du système (programmée ou en cours de sonnerie).
+    func isScheduled(id: UUID) throws -> Bool {
+        try system.alarms.contains { $0.id == id }
     }
 }
+
+extension AlarmManager: AlarmScheduling {}
