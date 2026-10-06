@@ -14,7 +14,8 @@ Build : GitHub Actions + Xcode 27 depuis Windows. Le projet Xcode est généré 
 Ayoub (chef de projet, tests iPhone, validation) · ChatGPT (architecture, sécurité, consignes) · Claude (développeur principal) · Gemini (assets non réalistes) · Grok (assets réalistes).
 
 ## État actuel
-Squelette uniquement : structure, documentation, app SwiftUI minimale, modèles de base, AlarmManager, protocole PronoteClient. Compilation CI avec Xcode 27 validée (build GitHub Actions + XcodeGen + IPA non signée, voir CHANGELOG).
+Base du projet en place : structure, documentation, app SwiftUI minimale (Dashboard placeholder), modèles de base, AlarmManager, protocole PronoteClient. Validé sur GitHub Actions avec Xcode 27 : build, génération du projet par XcodeGen, IPA non signée (voir CHANGELOG).
+Fonctionnalités validées : `WakeTimeCalculator` (`Services/WakeTimeCalculator.swift`, calcul pur de l'heure de réveil recommandée, sans AlarmKit) et sa cible de tests `WakeSchoolTests` (tests unitaires exécutés avec succès sur simulateur dans GitHub Actions). Le calculateur n'est pas encore branché à `AlarmManager` ni à l'UI.
 
 ## Décisions importantes
 - AlarmKit validé sur appareil réel via le prototype AlarmTest ; toute la logique reste isolée dans `Alarm/AlarmManager.swift`.

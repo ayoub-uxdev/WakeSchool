@@ -8,7 +8,7 @@
 - Protocole PronoteClient
 - Workflow GitHub Actions + XcodeGen
 - Vérifier la compilation sur GitHub Actions avec Xcode 27
-- Calcul de l'heure de réveil recommandée : code et tests unitaires écrits (Services/WakeTimeCalculator.swift, WakeSchoolTests/), validation du build CI Xcode 27 à confirmer
+- Calcul de l'heure de réveil recommandée : `Services/WakeTimeCalculator.swift` et tests unitaires `WakeSchoolTests/` implémentés ; build Xcode 27 et tests simulateur validés sur GitHub Actions
 
 ## En cours
 
