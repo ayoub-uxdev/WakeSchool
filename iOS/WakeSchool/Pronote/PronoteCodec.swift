@@ -59,10 +59,19 @@ enum PronoteCodec {
 
     private static func process(_ data: Data,
                                 operation: compression_stream_operation) throws -> Data {
+        // Xcode 27 expose les pointeurs de compression_stream comme non optionnels.
+        // Ils sont remplacés immédiatement avant le premier appel à process.
+        let dummyDestination = UnsafeMutablePointer<UInt8>.allocate(capacity: 1)
+        let dummySource = UnsafeMutablePointer<UInt8>.allocate(capacity: 1)
+        defer {
+            dummyDestination.deallocate()
+            dummySource.deallocate()
+        }
+
         var stream = compression_stream(
-            dst_ptr: nil,
+            dst_ptr: dummyDestination,
             dst_size: 0,
-            src_ptr: nil,
+            src_ptr: UnsafePointer(dummySource),
             src_size: 0,
             state: nil
         )
