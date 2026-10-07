@@ -160,7 +160,13 @@ struct PronoteAuthenticator {
                       encrypted: Bool) async throws -> [String: Any] {
         let encryptedOrder = try PronoteCrypto.aesCBCEncrypt(Data(String(requestNumber).utf8), key: key, iv: iv)
         let order = PronoteCodec.hex(encryptedOrder)
-        let dataSec = try PronoteCodec.encodeRequestDataSec(data, compressed: compressed, encrypted: encrypted, key: key, iv: iv)
+        let dataSec = try PronoteCodec.encodeRequestDataSec(
+            object: data,
+            compressed: compressed,
+            encrypted: encrypted,
+            key: key,
+            iv: iv
+        )
         let body: [String: Any] = [
             "session": Int(session.sessionID) ?? 0,
             "no": order,

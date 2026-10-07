@@ -54,41 +54,20 @@ enum PronoteCrypto {
         let input = Array(string.utf8)
         var output = [UInt8]()
         output.reserveCapacity(input.count / 2)
-
         var index = 0
-        var highNibble: UInt8?
-
         while index < input.count {
-            let byte = input[index]
-
-            if isASCIIWhitespace(byte) {
-                // Python's bytes.fromhex() allows whitespace only between
-                // complete byte pairs, not between the two nibbles of a byte.
-                guard highNibble == nil else {
-                    throw PronoteCryptoError.invalidHex
-                }
+            if isASCIIWhitespace(input[index]) {
                 index += 1
                 continue
             }
-
-            guard let nibble = hexNibble(byte) else {
+            guard index + 1 < input.count,
+                  let high = hexNibble(input[index]),
+                  let low = hexNibble(input[index + 1]) else {
                 throw PronoteCryptoError.invalidHex
             }
-
-            if let high = highNibble {
-                output.append((high << 4) | nibble)
-                highNibble = nil
-            } else {
-                highNibble = nibble
-            }
-
-            index += 1
+            output.append(high << 4 | low)
+            index += 2
         }
-
-        guard highNibble == nil else {
-            throw PronoteCryptoError.invalidHex
-        }
-
         return Data(output)
     }
 

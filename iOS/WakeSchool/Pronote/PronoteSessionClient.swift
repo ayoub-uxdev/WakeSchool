@@ -21,7 +21,13 @@ final class PronoteSessionClient {
         let logicalNumber = requestNumber
         let encryptedOrder = try PronoteCrypto.aesCBCEncrypt(Data(String(logicalNumber).utf8), key: key, iv: session.sessionIV)
         let order = PronoteCodec.hex(encryptedOrder)
-        let dataSec = try PronoteCodec.encodeRequestDataSec(data, compressed: session.requestsAreCompressed, encrypted: session.requestsAreEncrypted, key: key, iv: session.sessionIV)
+        let dataSec = try PronoteCodec.encodeRequestDataSec(
+            object: data,
+            compressed: session.requestsAreCompressed,
+            encrypted: session.requestsAreEncrypted,
+            key: key,
+            iv: session.sessionIV
+        )
 
         let body: [String: Any] = [
             "session": Int(session.sessionID) ?? 0,

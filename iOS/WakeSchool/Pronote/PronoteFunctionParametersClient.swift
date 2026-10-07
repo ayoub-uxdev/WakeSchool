@@ -1,7 +1,6 @@
 import Foundation
-import Security
 
-struct PronoteInitialSession {
+struct PronoteInitialSession: Equatable {
     let sessionID: String
     let spaceID: Int
     let requestNumber: Int
@@ -9,87 +8,115 @@ struct PronoteInitialSession {
     let sessionIV: Data
     let requestsAreEncrypted: Bool
     let requestsAreCompressed: Bool
-    let parameters: Any?
 }
 
-enum PronoteFunctionParametersError: Error, LocalizedError, Equatable {
-    case invalidSession
+enum PronoteFunctionParametersError: Error, Equatable, LocalizedError {
+    case invalidSessionID
+    case invalidSpaceID
+    case invalidRequestNumber
     case invalidIV
     case invalidResponse
-    case unexpectedResponseNumber(Int)
+    case unexpectedResponseNumber
     case missingData
+
     var errorDescription: String? {
         switch self {
-        case .invalidSession: return "Session PRONOTE invalide."
-        case .invalidIV: return "IV PRONOTE invalide."
-        case .invalidResponse: return "Réponse FonctionParametres invalide."
-        case .unexpectedResponseNumber(let n): return "Numéro d'ordre PRONOTE inattendu : \(n)."
-        case .missingData: return "Les paramètres PRONOTE sont absents."
+        case .invalidSessionID: return "L'identifiant de session PRONOTE est invalide."
+        case .invalidSpaceID: return "L'identifiant d'espace PRONOTE est invalide."
+        case .invalidRequestNumber: return "Le numéro d'ordre PRONOTE est invalide."
+        case .invalidIV: return "L'IV PRONOTE est invalide."
+        case .invalidResponse: return "La réponse FonctionParametres est invalide."
+        case .unexpectedResponseNumber: return "Le numéro d'ordre de la réponse PRONOTE est inattendu."
+        case .missingData: return "Les données FonctionParametres sont absentes."
         }
     }
 }
 
 struct PronoteFunctionParametersClient {
-    let transport: PronoteHTTPTransporting
+    private let transport: PronoteHTTPTransporting
 
-    func start(session: PronoteSessionParameters, clientIdentifier: String? = nil, temporaryIV: Data = Self.randomIV()) async throws -> PronoteInitialSession {
-        guard !session.sessionID.isEmpty, session.spaceID >= 0, temporaryIV.count == 16 else {
-            throw PronoteFunctionParametersError.invalidSession
+    init(transport: PronoteHTTPTransporting) {
+        self.transport = transport
+    }
+
+    func start(
+        session: PronoteSessionParameters,
+        serverURL: String,
+        clientIdentifier: String? = nil,
+        temporaryIV: Data
+    ) async throws -> PronoteInitialSession {
+        guard !session.sessionID.isEmpty else {
+            throw PronoteFunctionParametersError.invalidSessionID
+        }
+        guard session.spaceID >= 0 else {
+            throw PronoteFunctionParametersError.invalidSpaceID
+        }
+        guard temporaryIV.count == 16 else {
+            throw PronoteFunctionParametersError.invalidIV
         }
 
-        let defaultKey = PronoteCrypto.md5(Data())
-        let defaultIV = Data(repeating: 0, count: 16)
-        let encryptedOrder = try PronoteCrypto.aesCBCEncrypt(Data("1".utf8), key: defaultKey, iv: defaultIV)
-        let order = PronoteCodec.hex(encryptedOrder)
-        let endpoint = PronoteHTTPTransport.appelfonctionURL(rootURL: session.rootURL, spaceID: session.spaceID, sessionID: session.sessionID, order: order)
+        let initialOrder = try makeInitialOrder()
 
-        let uuid: String
-        if session.usesHTTPRSA {
-            let modulus = try PronoteCrypto.data(fromHex: Self.rsaModulusHex)
-            let encryptedIV = try PronoteCrypto.rsaEncryptPKCS1v15(temporaryIV, modulus: modulus, exponent: 65537)
-            uuid = encryptedIV.base64EncodedString()
-        } else {
-            uuid = temporaryIV.base64EncodedString()
+        guard let baseURL = URL(string: normalizedRoot(serverURL)) else {
+            throw PronoteTransportError.invalidServerURL
         }
 
-        var data: [String: Any] = ["Uuid": uuid]
-        data["identifiantNav"] = clientIdentifier ?? NSNull()
-        let dataObject: [String: Any] = ["data": data]
+        let endpoint = baseURL
+            .appendingPathComponent("appelfonction")
+            .appendingPathComponent(String(session.spaceID))
+            .appendingPathComponent(session.sessionID)
+            .appendingPathComponent(initialOrder)
 
-        let dataSec = try PronoteCodec.encodeRequestDataSec(
-            dataObject,
-            compressed: session.requestsAreCompressed,
-            encrypted: session.requestsAreEncrypted,
-            key: defaultKey,
-            iv: defaultIV
-        )
+        let uuid = temporaryIV.base64EncodedString()
+
+        var data: [String: Any] = [
+            "Uuid": uuid
+        ]
+        data["identifiantNav"] = clientIdentifier as Any
 
         let body: [String: Any] = [
+            "nom": "FonctionParametres",
             "session": Int(session.sessionID) ?? 0,
-            "no": order,
+            "no": initialOrder,
             "id": "FonctionParametres",
-            "dataSec": Self.dataSecJSON(dataSec)
+            "dataSec": [
+                "data": data
+            ]
         ]
+
         let bodyData = try JSONSerialization.data(withJSONObject: body, options: [])
-        let responseData = try await transport.post(to: endpoint, body: bodyData, additionalHeaders: [:])
-        guard let response = try JSONSerialization.jsonObject(with: responseData) as? [String: Any] else {
-            throw PronoteFunctionParametersError.invalidResponse
-        }
+        let responseData = try await transport.post(
+            to: endpoint,
+            body: bodyData,
+            additionalHeaders: [:]
+        )
 
         let sessionIV = PronoteCrypto.md5(temporaryIV)
-        guard let responseOrder = response["no"] as? String ?? response["numeroOrdre"] as? String else {
+
+        guard let response = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any] else {
             throw PronoteFunctionParametersError.invalidResponse
         }
-        let responseNumber = try decryptOrder(responseOrder, key: defaultKey, iv: sessionIV)
-        guard responseNumber == 2 else { throw PronoteFunctionParametersError.unexpectedResponseNumber(responseNumber) }
 
-        var parameters: Any?
-        if let dataSec = response["dataSec"] as? String {
-            parameters = try? PronoteCodec.decodeResponseDataSec(dataSec, compressed: session.requestsAreCompressed, encrypted: session.requestsAreEncrypted, key: defaultKey, iv: sessionIV)
-        } else if let object = response["dataSec"] as? [String: Any] {
-            parameters = object
-        } else {
-            parameters = nil
+        guard let responseNumber = response["no"] as? String
+                ?? response["numeroOrdre"] as? String else {
+            throw PronoteFunctionParametersError.invalidResponse
+        }
+
+        let decoded = try PronoteCrypto.data(fromHex: responseNumber)
+        let plain = try PronoteCrypto.aesCBCDecrypt(
+            decoded,
+            key: PronoteCrypto.md5(Data()),
+            iv: sessionIV
+        )
+
+        guard let numberString = String(data: plain, encoding: .utf8),
+              let number = Int(numberString),
+              number == 2 else {
+            throw PronoteFunctionParametersError.unexpectedResponseNumber
+        }
+
+        guard response["dataSec"] != nil else {
+            throw PronoteFunctionParametersError.missingData
         }
 
         return PronoteInitialSession(
@@ -99,32 +126,33 @@ struct PronoteFunctionParametersClient {
             temporaryIV: temporaryIV,
             sessionIV: sessionIV,
             requestsAreEncrypted: session.requestsAreEncrypted,
-            requestsAreCompressed: session.requestsAreCompressed,
-            parameters: parameters
+            requestsAreCompressed: session.requestsAreCompressed
         )
     }
 
-    private func decryptOrder(_ hex: String, key: Data, iv: Data) throws -> Int {
-        let encrypted = try PronoteCrypto.data(fromHex: hex)
-        let plain = try PronoteCrypto.aesCBCDecrypt(encrypted, key: key, iv: iv)
-        guard let text = String(data: plain, encoding: .utf8), let value = Int(text) else {
-            throw PronoteFunctionParametersError.invalidResponse
+    private func makeInitialOrder() throws -> String {
+        let key = PronoteCrypto.md5(Data())
+        let iv = Data(repeating: 0, count: 16)
+        let encrypted = try PronoteCrypto.aesCBCEncrypt(
+            Data("1".utf8),
+            key: key,
+            iv: iv
+        )
+        return PronoteCodec.hex(encrypted)
+    }
+
+    private func normalizedRoot(_ serverURL: String) -> String {
+        var value = serverURL
+        while value.hasSuffix("/") {
+            value.removeLast()
         }
+
+        if value.hasSuffix("/mobile.eleve.html") {
+            value.removeLast("/mobile.eleve.html".count)
+        } else if value.hasSuffix("/eleve.html") {
+            value.removeLast("/eleve.html".count)
+        }
+
         return value
     }
-
-    private static func dataSecJSON(_ value: PronoteDataSec) -> Any {
-        switch value {
-        case .jsonObject(let object): return object
-        case .encodedHex(let hex): return hex
-        }
-    }
-
-    private static func randomIV() -> Data {
-        var data = Data(repeating: 0, count: 16)
-        _ = data.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 16, $0.baseAddress!) }
-        return data
-    }
-
-    private static let rsaModulusHex = "b99b77a3d72d3a29b4271fc7b7300e2f791eb8948174be7b8024667e915446d4eea0c2424b8d1ebf7e2ddff94691c6e994e839225c627d140a8f1146d1b0b5f18a09bbd3d8f421ca1e3e4796b301eebccf80d81a32a1580121b8294433c38377083c5517d5921e8a078cdc019b15775292efda2c30251b1ccabe812386c893e5"
 }
