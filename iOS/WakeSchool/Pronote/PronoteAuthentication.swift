@@ -36,12 +36,14 @@ enum PronoteAuthenticationError: Error, Equatable, LocalizedError {
 }
 
 struct PronoteAuthenticationResult {
+    let serverURL: String
     let sessionID: String
     let spaceID: Int
     let requestNumber: Int
     let userName: String?
     let mobileToken: String?
     let authenticationKey: Data
+    let sessionIV: Data
 }
 
 struct PronoteAuthenticationClient {
@@ -352,6 +354,8 @@ struct PronoteAuthenticationClient {
         )
 
         return PronoteAuthenticationResult(
+            sessionIV: session.sessionIV,
+            serverURL: session.serverURL,
             sessionID: session.sessionID,
             spaceID: spaceID,
             requestNumber: 7,
