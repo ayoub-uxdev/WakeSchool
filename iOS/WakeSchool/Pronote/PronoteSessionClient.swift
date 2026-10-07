@@ -90,7 +90,7 @@ final class PronoteSessionClient {
             key: encryptionKey,
             iv: encryptionIV
         )
-
+ 
         guard let numericSessionID = Int(session.sessionID) else {
             throw PronoteSessionError.invalidSession
         }
