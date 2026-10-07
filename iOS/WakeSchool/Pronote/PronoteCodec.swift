@@ -59,23 +59,7 @@ enum PronoteCodec {
 
     private static func process(_ data: Data,
                                 operation: compression_stream_operation) throws -> Data {
-        // Xcode 27 expose les pointeurs de compression_stream comme non optionnels.
-        // Ils sont remplacés immédiatement avant le premier appel à process.
-        let dummyDestination = UnsafeMutablePointer<UInt8>.allocate(capacity: 1)
-        let dummySource = UnsafeMutablePointer<UInt8>.allocate(capacity: 1)
-        defer {
-            dummyDestination.deallocate()
-            dummySource.deallocate()
-        }
-
-        var stream = compression_stream(
-            dst_ptr: dummyDestination,
-            dst_size: 0,
-            src_ptr: UnsafePointer(dummySource),
-            src_size: 0,
-            state: nil
-        )
-
+        var stream = compression_stream()
         guard compression_stream_init(&stream, operation, COMPRESSION_ZLIB) != COMPRESSION_STATUS_ERROR else {
             throw operation == COMPRESSION_STREAM_ENCODE
                 ? PronoteCodecError.compressionFailed
@@ -102,12 +86,12 @@ enum PronoteCodec {
 
             var status: compression_status = COMPRESSION_STATUS_OK
             repeat {
-                // Keep the destination pointer valid for the whole process call.
-                status = buffer.withUnsafeMutableBytes { rawOutput in
+                buffer.withUnsafeMutableBytes { rawOutput in
                     stream.dst_ptr = rawOutput.bindMemory(to: UInt8.self).baseAddress!
                     stream.dst_size = outputCapacity
-                    return compression_stream_process(&stream, finalize)
                 }
+
+                status = compression_stream_process(&stream, finalize)
 
                 let produced = outputCapacity - stream.dst_size
                 if produced > 0 {
@@ -115,10 +99,12 @@ enum PronoteCodec {
                 }
 
                 if status == COMPRESSION_STATUS_ERROR {
-                    throw operation == COMPRESSION_STREAM_ENCODE
-                        ? PronoteCodecError.compressionFailed
-                        : PronoteCodecError.decompressionFailed
+                    return
                 }
+
+                // END signifie que le flux est entièrement terminé.
+                // OK signifie qu'il faut continuer, typiquement parce que le tampon
+                // de sortie était plein ou que le flux n'avait pas encore terminé.
             } while status == COMPRESSION_STATUS_OK
 
             guard status == COMPRESSION_STATUS_END else {
@@ -129,7 +115,6 @@ enum PronoteCodec {
             return output
         }
     }
-
 
     static func hex(_ data: Data) -> String {
         data.map { String(format: "%02X", $0) }.joined()
@@ -163,18 +148,12 @@ enum PronoteCodec {
         }
     }
 
-    /// Encodage d'une requête PRONOTE.
-    ///
-    /// La version actuelle de pronotepy 2.15.x applique, lorsqu'elle
-    /// compresse, une étape hex-ASCII avant le DEFLATE :
-    /// JSON UTF-8 -> hex ASCII -> raw DEFLATE -> hex.
-    /// Si le chiffrement est actif, le résultat DEFLATE brut est chiffré
-    /// avant le dernier hexadécimal.
-    static func encodeRequestDataSec(_ object: Any,
-                                     compressed: Bool,
-                                     encrypted: Bool,
-                                     key: Data,
-                                     iv: Data) throws -> PronoteDataSec {
+    /// Prépare la valeur `dataSec` exacte à placer dans le JSON HTTP.
+    static func encodeDataSec(_ object: Any,
+                              compressed: Bool,
+                              encrypted: Bool,
+                              key: Data,
+                              iv: Data) throws -> PronoteDataSec {
         guard compressed || encrypted else {
             guard JSONSerialization.isValidJSONObject(object) else {
                 throw PronoteCodecError.invalidJSON
@@ -184,52 +163,39 @@ enum PronoteCodec {
 
         var payload = try jsonData(object)
         if compressed {
-            let jsonHex = hex(payload).lowercased()
-            payload = try deflate(Data(jsonHex.utf8))
+            payload = try deflate(payload)
         }
         if encrypted {
-            payload = try PronoteCrypto.aesCBCEncrypt(payload, key: key, iv: iv)
+            do {
+                payload = try PronoteCrypto.aesCBCEncrypt(payload, key: key, iv: iv)
+            } catch {
+                throw error
+            }
         }
         return .encodedHex(hex(payload))
     }
 
-    /// Décodage d'une réponse PRONOTE.
-    /// Les réponses compressées sont décompressées directement vers le JSON
-    /// UTF-8, contrairement au pipeline de requête actuel de pronotepy.
-    static func decodeResponseDataSec(_ hexString: String,
-                                      compressed: Bool,
-                                      encrypted: Bool,
-                                      key: Data,
-                                      iv: Data) throws -> Any {
+    /// Décode une chaîne `dataSec` hexadécimale reçue après compression/chiffrement.
+    static func decodeDataSec(_ hexString: String,
+                              compressed: Bool,
+                              encrypted: Bool,
+                              key: Data,
+                              iv: Data) throws -> Any {
         guard compressed || encrypted else {
             throw PronoteCodecError.invalidHex
         }
 
         var payload = try data(fromHex: hexString)
         if encrypted {
-            payload = try PronoteCrypto.aesCBCDecrypt(payload, key: key, iv: iv)
+            do {
+                payload = try PronoteCrypto.aesCBCDecrypt(payload, key: key, iv: iv)
+            } catch {
+                throw error
+            }
         }
         if compressed {
             payload = try inflate(payload)
         }
         return try jsonObject(from: payload)
     }
-
-    // Compatibilité avec les appels déjà écrits dans le projet.
-    static func encodeDataSec(_ object: Any,
-                              compressed: Bool,
-                              encrypted: Bool,
-                              key: Data,
-                              iv: Data) throws -> PronoteDataSec {
-        try encodeRequestDataSec(object, compressed: compressed, encrypted: encrypted, key: key, iv: iv)
-    }
-
-    static func decodeDataSec(_ hexString: String,
-                              compressed: Bool,
-                              encrypted: Bool,
-                              key: Data,
-                              iv: Data) throws -> Any {
-        try decodeResponseDataSec(hexString, compressed: compressed, encrypted: encrypted, key: key, iv: iv)
-    }
-
 }

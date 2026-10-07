@@ -1,8 +1,5 @@
 import Foundation
 
-/// Adaptateur `PronoteClient` -> `SchoolDataProvider`.
-/// Pronote n'expose pour l'instant que l'emploi du temps, les devoirs et les notes ;
-/// les contrôles et évènements restent vides tant que le client ne les fournit pas.
 struct PronoteSchoolDataProvider: SchoolDataProvider {
     let client: PronoteClient
 

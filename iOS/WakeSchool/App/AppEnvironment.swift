@@ -24,19 +24,23 @@ final class AppEnvironment {
     static func live() throws -> AppEnvironment {
         let preferences = PreferencesStore()
         let container = try SwiftDataSchoolRepository.makeContainer()
+        let secrets = KeychainSecretStore()
         return AppEnvironment(preferences: preferences,
-                              secrets: KeychainSecretStore(),
+                              secrets: secrets,
                               repository: SwiftDataSchoolRepository(container: container),
-                              provider: makeProvider(for: preferences.dataSource))
+                              provider: makeProvider(for: preferences.dataSource, secrets: secrets))
     }
 
-    static func makeProvider(for source: DataSourceKind) -> SchoolDataProvider {
+    static func makeProvider(for source: DataSourceKind, secrets: SecretStore? = nil) -> SchoolDataProvider {
         switch source {
         case .demo:
             return DemoSchoolDataProvider()
         case .pronote:
-            // Remplacer UnavailablePronoteClient par le vrai client quand il existera.
-            return PronoteSchoolDataProvider(client: UnavailablePronoteClient())
+            guard let secrets,
+                  let credentials = try? CredentialsStore(store: secrets).load() else {
+                return PronoteSchoolDataProvider(client: UnavailablePronoteClient())
+            }
+            return PronoteSchoolDataProvider(client: LivePronoteClient(credentials: credentials))
         }
     }
 }

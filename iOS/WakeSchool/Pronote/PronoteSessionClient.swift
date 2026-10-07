@@ -1,194 +1,128 @@
 import Foundation
 
-enum PronoteSessionError: Error, Equatable, LocalizedError {
-    case invalidSession
-    case invalidResponse
-    case invalidResponseOrder
-    case missingDataSec
-    case unsupportedDataSec
-
-    var errorDescription: String? {
-        switch self {
-        case .invalidSession:
-            return "La session PRONOTE est invalide."
-        case .invalidResponse:
-            return "La réponse PRONOTE est invalide."
-        case .invalidResponseOrder:
-            return "Le numéro d'ordre PRONOTE est invalide."
-        case .missingDataSec:
-            return "PRONOTE n'a pas fourni dataSec."
-        case .unsupportedDataSec:
-            return "Le format dataSec PRONOTE n'est pas pris en charge."
-        }
-    }
-}
-
 final class PronoteSessionClient {
     private let transport: PronoteHTTPTransporting
     private let session: PronoteAuthenticationResult
-    private let serverURL: String
-
     private var requestNumber: Int
-    private let encryptionKey: Data
-    private let encryptionIV: Data
+    private var key: Data
 
-    init(
-        transport: PronoteHTTPTransporting,
-        session: PronoteAuthenticationResult,
-        serverURL: String
-    ) throws {
-        guard !session.sessionID.isEmpty else {
-            throw PronoteSessionError.invalidSession
-        }
-
+    init(transport: PronoteHTTPTransporting, session: PronoteAuthenticationResult) {
         self.transport = transport
         self.session = session
-        self.serverURL = serverURL
         self.requestNumber = session.requestNumber
-        self.encryptionKey = session.authenticationKey
-
-        // Après FonctionParametres, l'IV de session reste celui
-        // communiqué au début de la session.
-        //
-        // Il sera remplacé ici par le même IV utilisé pendant
-        // l'authentification.
-        self.encryptionIV = session.sessionIV
+        self.key = session.sessionKey
     }
 
-    // MARK: - ParametresUtilisateur
+    var userName: String? { session.userName }
+    var mobileToken: String? { session.mobileToken }
+    var rootURL: URL { session.rootURL }
 
-    func fetchUserParameters() async throws -> Any {
-        try await request(
-            function: "ParametresUtilisateur",
-            data: [:]
-        )
-    }
-
-    // MARK: - Generic request
-
-    func request(
-        function: String,
-        data: [String: Any]
-    ) async throws -> Any {
-
+    func request(function: String, data: [String: Any] = [:]) async throws -> Any {
         let logicalNumber = requestNumber
-
-        let encryptedNumber = try encryptedOrder(
-            logicalNumber,
-            key: encryptionKey,
-            iv: encryptionIV
-        )
-
-        let dataWrapper: [String: Any] = [
-            "data": data
-        ]
-
-        let encodedDataSec = try PronoteCodec.encodeRequestDataSec(
-            dataWrapper,
-            compressed: true,
-            encrypted: true,
-            key: encryptionKey,
-            iv: encryptionIV
-        )
- 
-        guard let numericSessionID = Int(session.sessionID) else {
-            throw PronoteSessionError.invalidSession
-        }
+        let encryptedOrder = try PronoteCrypto.aesCBCEncrypt(Data(String(logicalNumber).utf8), key: key, iv: session.sessionIV)
+        let order = PronoteCodec.hex(encryptedOrder)
+        let dataSec = try PronoteCodec.encodeRequestDataSec(data, compressed: session.requestsAreCompressed, encrypted: session.requestsAreEncrypted, key: key, iv: session.sessionIV)
 
         let body: [String: Any] = [
-            "session": numericSessionID,
-            "no": encryptedNumber,
+            "session": Int(session.sessionID) ?? 0,
+            "no": order,
             "id": function,
-            "dataSec": encodedDataSec
+            "dataSec": Self.dataSecJSON(dataSec)
         ]
-
-        let bodyData = try JSONSerialization.data(
-            withJSONObject: body,
-            options: []
-        )
-
-        let endpoint = try PronoteFunctionParametersClient.appelFonctionURL(
-            serverURL: serverURL,
-            spaceID: session.spaceID,
-            sessionID: session.sessionID,
-            requestNumber: encryptedNumber
-        )
-
-        let responseData = try await transport.post(
-            to: endpoint,
-            body: bodyData,
-            additionalHeaders: [:]
-        )
-
-        guard let response = try JSONSerialization.jsonObject(
-            with: responseData
-        ) as? [String: Any] else {
+        let bodyData = try JSONSerialization.data(withJSONObject: body, options: [])
+        let endpoint = PronoteHTTPTransport.appelfonctionURL(rootURL: session.rootURL, spaceID: session.spaceID, sessionID: session.sessionID, order: order)
+        let responseData = try await transport.post(to: endpoint, body: bodyData, additionalHeaders: [:])
+        guard var response = try JSONSerialization.jsonObject(with: responseData) as? [String: Any] else {
             throw PronoteSessionError.invalidResponse
         }
 
-        guard let responseOrder = response["no"] as? String else {
-            throw PronoteSessionError.invalidResponseOrder
+        if let responseNo = response["no"] as? String ?? response["numeroOrdre"] as? String {
+            let plain = try PronoteCrypto.aesCBCDecrypt(try PronoteCrypto.data(fromHex: responseNo), key: key, iv: session.sessionIV)
+            if let text = String(data: plain, encoding: .utf8), let number = Int(text), number != logicalNumber + 1 {
+                throw PronoteSessionError.unexpectedResponseNumber(number)
+            }
         }
 
-        let decodedOrder = try PronoteCrypto.data(
-            fromHex: responseOrder
-        )
-
-        let plainOrder = try PronoteCrypto.aesCBCDecrypt(
-            decodedOrder,
-            key: encryptionKey,
-            iv: encryptionIV
-        )
-
-        guard
-            let responseNumberString = String(
-                data: plainOrder,
-                encoding: .utf8
-            ),
-            let responseNumber = Int(responseNumberString),
-            responseNumber == logicalNumber + 1
-        else {
-            throw PronoteSessionError.invalidResponseOrder
+        if let error = response["Erreur"] as? [String: Any] {
+            let code = Int((error["G"] as? NSNumber)?.intValue ?? Int(error["G"] as? String ?? "0") ?? 0)
+            throw PronoteSessionError.pronoteError(code, error["Titre"] as? String ?? "Erreur inconnue")
         }
 
-        guard let responseDataSec = response["dataSec"] else {
-            throw PronoteSessionError.missingDataSec
+        if let responseDataSec = response["dataSec"] as? String {
+            response["dataSec"] = try PronoteCodec.decodeResponseDataSec(responseDataSec, compressed: session.requestsAreCompressed, encrypted: session.requestsAreEncrypted, key: key, iv: session.sessionIV)
         }
-
-        guard let responseHex = responseDataSec as? String else {
-            throw PronoteSessionError.unsupportedDataSec
-        }
-
-        let decoded = try PronoteCodec.decodeResponseDataSec(
-            responseHex,
-            compressed: true,
-            encrypted: true,
-            key: encryptionKey,
-            iv: encryptionIV
-        )
-
         requestNumber += 2
-
-        return decoded
+        return response
     }
 
-    // MARK: - Crypto
+    func userParameters() async throws -> Any {
+        try await request(function: "ParametresUtilisateur", data: [:])
+    }
 
-    private func encryptedOrder(
-        _ number: Int,
-        key: Data,
-        iv: Data
-    ) throws -> String {
+    func timetable(weekNumber: Int, resource: [String: Any]) async throws -> Any {
+        let payload: [String: Any] = [
+            "data": [
+                "ressource": resource,
+                "Ressource": resource,
+                "numeroSemaine": weekNumber,
+                "NumeroSemaine": weekNumber,
+                "avecAbsencesEleve": false,
+                "avecConseilDeClasse": true,
+                "estEDTPermanence": false,
+                "avecAbsencesRessource": true,
+                "avecDisponibilites": true,
+                "avecInfosPrefsGrille": true
+            ],
+            "_Signature_": ["onglet": 16]
+        ]
+        return try await request(function: "PageEmploiDuTemps", data: payload)
+    }
 
-        let encrypted = try PronoteCrypto.aesCBCEncrypt(
-            Data(String(number).utf8),
-            key: key,
-            iv: iv
-        )
+    func homework(from start: Date, to end: Date, resource: [String: Any]) async throws -> Any {
+        let payload: [String: Any] = [
+            "data": [
+                "ressource": resource,
+                "Ressource": resource,
+                "dateDebut": Self.dayString(start),
+                "dateFin": Self.dayString(end),
+                "avecRessource": true
+            ],
+            "_Signature_": ["onglet": 20]
+        ]
+        return try await request(function: "PageCahierDeTexte", data: payload)
+    }
 
-        return PronoteCrypto.hexString(
-            from: encrypted,
-            uppercase: true
-        )
+    func grades(period: [String: Any]) async throws -> Any {
+        let payload: [String: Any] = [
+            "data": ["periode": period],
+            "_Signature_": ["onglet": 198]
+        ]
+        return try await request(function: "DernieresNotes", data: payload)
+    }
+
+    private static func dayString(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+
+    private static func dataSecJSON(_ value: PronoteDataSec) -> Any {
+        switch value { case .jsonObject(let object): return object; case .encodedHex(let hex): return hex }
+    }
+}
+
+enum PronoteSessionError: Error, LocalizedError, Equatable {
+    case invalidResponse
+    case unexpectedResponseNumber(Int)
+    case pronoteError(Int, String)
+    var errorDescription: String? {
+        switch self {
+        case .invalidResponse: return "Réponse PRONOTE invalide."
+        case .unexpectedResponseNumber(let number): return "Numéro d'ordre PRONOTE inattendu : \(number)."
+        case .pronoteError(let code, let message): return "Erreur PRONOTE \(code) : \(message)"
+        }
     }
 }
