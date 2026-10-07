@@ -19,52 +19,118 @@ final class PronoteSessionClient {
 
     func request(function: String, data: [String: Any] = [:]) async throws -> Any {
         let logicalNumber = requestNumber
-        let encryptedOrder = try PronoteCrypto.aesCBCEncrypt(Data(String(logicalNumber).utf8), key: key, iv: session.sessionIV)
+
+        let encryptedOrder = try PronoteCrypto.aesCBCEncrypt(
+            Data(String(logicalNumber).utf8),
+            key: key,
+            iv: session.sessionIV
+        )
+
         let order = PronoteCodec.hex(encryptedOrder)
+
         let dataSec = try PronoteCodec.encodeDataSec(
-            object: data,
+            data,
             compressed: session.requestsAreCompressed,
             encrypted: session.requestsAreEncrypted,
             key: key,
             iv: session.sessionIV
         )
+
         let body: [String: Any] = [
             "session": Int(session.sessionID) ?? 0,
             "no": order,
             "id": function,
             "dataSec": Self.dataSecJSON(dataSec)
         ]
-        let bodyData = try JSONSerialization.data(withJSONObject: body, options: [])
-        let endpoint = PronoteHTTPTransport.appelfonctionURL(rootURL: session.rootURL, spaceID: session.spaceID, sessionID: session.sessionID, order: order)
-        let responseData = try await transport.post(to: endpoint, body: bodyData, additionalHeaders: [:])
-        guard var response = try JSONSerialization.jsonObject(with: responseData) as? [String: Any] else {
+
+        let bodyData = try JSONSerialization.data(
+            withJSONObject: body,
+            options: []
+        )
+
+        let endpoint = PronoteHTTPTransport.appelfonctionURL(
+            rootURL: session.rootURL,
+            spaceID: session.spaceID,
+            sessionID: session.sessionID,
+            order: order
+        )
+
+        let responseData = try await transport.post(
+            to: endpoint,
+            body: bodyData,
+            additionalHeaders: [:]
+        )
+
+        guard var response = try JSONSerialization.jsonObject(
+            with: responseData
+        ) as? [String: Any] else {
             throw PronoteSessionError.invalidResponse
         }
 
-        if let responseNo = response["no"] as? String ?? response["numeroOrdre"] as? String {
-            let plain = try PronoteCrypto.aesCBCDecrypt(try PronoteCrypto.data(fromHex: responseNo), key: key, iv: session.sessionIV)
-            if let text = String(data: plain, encoding: .utf8), let number = Int(text), number != logicalNumber + 1 {
+        if let responseNo = response["no"] as? String
+            ?? response["numeroOrdre"] as? String {
+
+            let responseNoData = try PronoteCrypto.data(fromHex: responseNo)
+
+            let plain = try PronoteCrypto.aesCBCDecrypt(
+                responseNoData,
+                key: key,
+                iv: session.sessionIV
+            )
+
+            if let text = String(data: plain, encoding: .utf8),
+               let number = Int(text),
+               number != logicalNumber + 1 {
                 throw PronoteSessionError.unexpectedResponseNumber(number)
             }
         }
 
         if let error = response["Erreur"] as? [String: Any] {
-            let code = Int((error["G"] as? NSNumber)?.intValue ?? Int(error["G"] as? String ?? "0") ?? 0)
-            throw PronoteSessionError.pronoteError(code, error["Titre"] as? String ?? "Erreur inconnue")
+            let code: Int
+
+            if let value = error["G"] as? NSNumber {
+                code = value.intValue
+            } else if let value = error["G"] as? String {
+                code = Int(value) ?? 0
+            } else {
+                code = 0
+            }
+
+            let message = error["Titre"] as? String ?? "Erreur inconnue"
+
+            throw PronoteSessionError.pronoteError(
+                code,
+                message
+            )
         }
 
         if let responseDataSec = response["dataSec"] as? String {
-            response["dataSec"] = try PronoteCodec.decodeDataSec(responseDataSec, compressed: session.requestsAreCompressed, encrypted: session.requestsAreEncrypted, key: key, iv: session.sessionIV)
+            response["dataSec"] = try PronoteCodec.decodeDataSec(
+                responseDataSec,
+                compressed: session.requestsAreCompressed,
+                encrypted: session.requestsAreEncrypted,
+                key: key,
+                iv: session.sessionIV
+            )
         }
+
         requestNumber += 2
+
         return response
     }
 
     func userParameters() async throws -> Any {
-        try await request(function: "ParametresUtilisateur", data: [:])
+        try await request(
+            function: "ParametresUtilisateur",
+            data: [:]
+        )
     }
 
-    func timetable(weekNumber: Int, resource: [String: Any]) async throws -> Any {
+    func timetable(
+        weekNumber: Int,
+        resource: [String: Any]
+    ) async throws -> Any {
+
         let payload: [String: Any] = [
             "data": [
                 "ressource": resource,
@@ -78,12 +144,23 @@ final class PronoteSessionClient {
                 "avecDisponibilites": true,
                 "avecInfosPrefsGrille": true
             ],
-            "_Signature_": ["onglet": 16]
+            "_Signature_": [
+                "onglet": 16
+            ]
         ]
-        return try await request(function: "PageEmploiDuTemps", data: payload)
+
+        return try await request(
+            function: "PageEmploiDuTemps",
+            data: payload
+        )
     }
 
-    func homework(from start: Date, to end: Date, resource: [String: Any]) async throws -> Any {
+    func homework(
+        from start: Date,
+        to end: Date,
+        resource: [String: Any]
+    ) async throws -> Any {
+
         let payload: [String: Any] = [
             "data": [
                 "ressource": resource,
@@ -92,17 +169,31 @@ final class PronoteSessionClient {
                 "dateFin": Self.dayString(end),
                 "avecRessource": true
             ],
-            "_Signature_": ["onglet": 20]
+            "_Signature_": [
+                "onglet": 20
+            ]
         ]
-        return try await request(function: "PageCahierDeTexte", data: payload)
+
+        return try await request(
+            function: "PageCahierDeTexte",
+            data: payload
+        )
     }
 
     func grades(period: [String: Any]) async throws -> Any {
         let payload: [String: Any] = [
-            "data": ["periode": period],
-            "_Signature_": ["onglet": 198]
+            "data": [
+                "periode": period
+            ],
+            "_Signature_": [
+                "onglet": 198
+            ]
         ]
-        return try await request(function: "DernieresNotes", data: payload)
+
+        return try await request(
+            function: "DernieresNotes",
+            data: payload
+        )
     }
 
     private static func dayString(_ date: Date) -> String {
@@ -111,11 +202,20 @@ final class PronoteSessionClient {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = .current
         formatter.dateFormat = "yyyy-MM-dd"
+
         return formatter.string(from: date)
     }
 
-    private static func dataSecJSON(_ value: PronoteDataSec) -> Any {
-        switch value { case .jsonObject(let object): return object; case .encodedHex(let hex): return hex }
+    private static func dataSecJSON(
+        _ value: PronoteDataSec
+    ) -> Any {
+        switch value {
+        case .jsonObject(let object):
+            return object
+
+        case .encodedHex(let hex):
+            return hex
+        }
     }
 }
 
@@ -123,11 +223,17 @@ enum PronoteSessionError: Error, LocalizedError, Equatable {
     case invalidResponse
     case unexpectedResponseNumber(Int)
     case pronoteError(Int, String)
+
     var errorDescription: String? {
         switch self {
-        case .invalidResponse: return "Réponse PRONOTE invalide."
-        case .unexpectedResponseNumber(let number): return "Numéro d'ordre PRONOTE inattendu : \(number)."
-        case .pronoteError(let code, let message): return "Erreur PRONOTE \(code) : \(message)"
+        case .invalidResponse:
+            return "Réponse PRONOTE invalide."
+
+        case .unexpectedResponseNumber(let number):
+            return "Numéro d'ordre PRONOTE inattendu : \(number)"
+
+        case .pronoteError(let code, let message):
+            return "Erreur PRONOTE \(code) : \(message)"
         }
     }
 }
