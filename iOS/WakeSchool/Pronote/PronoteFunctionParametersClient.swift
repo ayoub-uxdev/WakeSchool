@@ -25,7 +25,7 @@ enum PronoteFunctionParametersError: Error, Equatable, LocalizedError {
     }
 }
 
-struct PronoteInitialSession: Equatable {
+struct PronoteInitialSession {
     let sessionID: String
     let spaceID: Int
     let requestNumber: Int
