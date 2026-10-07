@@ -163,12 +163,18 @@ enum PronoteCodec {
         }
     }
 
-    /// Prépare la valeur `dataSec` exacte à placer dans le JSON HTTP.
-    static func encodeDataSec(_ object: Any,
-                              compressed: Bool,
-                              encrypted: Bool,
-                              key: Data,
-                              iv: Data) throws -> PronoteDataSec {
+    /// Encodage d'une requête PRONOTE.
+    ///
+    /// La version actuelle de pronotepy 2.15.x applique, lorsqu'elle
+    /// compresse, une étape hex-ASCII avant le DEFLATE :
+    /// JSON UTF-8 -> hex ASCII -> raw DEFLATE -> hex.
+    /// Si le chiffrement est actif, le résultat DEFLATE brut est chiffré
+    /// avant le dernier hexadécimal.
+    static func encodeRequestDataSec(_ object: Any,
+                                     compressed: Bool,
+                                     encrypted: Bool,
+                                     key: Data,
+                                     iv: Data) throws -> PronoteDataSec {
         guard compressed || encrypted else {
             guard JSONSerialization.isValidJSONObject(object) else {
                 throw PronoteCodecError.invalidJSON
@@ -178,39 +184,52 @@ enum PronoteCodec {
 
         var payload = try jsonData(object)
         if compressed {
-            payload = try deflate(payload)
+            let jsonHex = hex(payload).lowercased()
+            payload = try deflate(Data(jsonHex.utf8))
         }
         if encrypted {
-            do {
-                payload = try PronoteCrypto.aesCBCEncrypt(payload, key: key, iv: iv)
-            } catch {
-                throw error
-            }
+            payload = try PronoteCrypto.aesCBCEncrypt(payload, key: key, iv: iv)
         }
         return .encodedHex(hex(payload))
     }
 
-    /// Décode une chaîne `dataSec` hexadécimale reçue après compression/chiffrement.
-    static func decodeDataSec(_ hexString: String,
-                              compressed: Bool,
-                              encrypted: Bool,
-                              key: Data,
-                              iv: Data) throws -> Any {
+    /// Décodage d'une réponse PRONOTE.
+    /// Les réponses compressées sont décompressées directement vers le JSON
+    /// UTF-8, contrairement au pipeline de requête actuel de pronotepy.
+    static func decodeResponseDataSec(_ hexString: String,
+                                      compressed: Bool,
+                                      encrypted: Bool,
+                                      key: Data,
+                                      iv: Data) throws -> Any {
         guard compressed || encrypted else {
             throw PronoteCodecError.invalidHex
         }
 
         var payload = try data(fromHex: hexString)
         if encrypted {
-            do {
-                payload = try PronoteCrypto.aesCBCDecrypt(payload, key: key, iv: iv)
-            } catch {
-                throw error
-            }
+            payload = try PronoteCrypto.aesCBCDecrypt(payload, key: key, iv: iv)
         }
         if compressed {
             payload = try inflate(payload)
         }
         return try jsonObject(from: payload)
     }
+
+    // Compatibilité avec les appels déjà écrits dans le projet.
+    static func encodeDataSec(_ object: Any,
+                              compressed: Bool,
+                              encrypted: Bool,
+                              key: Data,
+                              iv: Data) throws -> PronoteDataSec {
+        try encodeRequestDataSec(object, compressed: compressed, encrypted: encrypted, key: key, iv: iv)
+    }
+
+    static func decodeDataSec(_ hexString: String,
+                              compressed: Bool,
+                              encrypted: Bool,
+                              key: Data,
+                              iv: Data) throws -> Any {
+        try decodeResponseDataSec(hexString, compressed: compressed, encrypted: encrypted, key: key, iv: iv)
+    }
+
 }

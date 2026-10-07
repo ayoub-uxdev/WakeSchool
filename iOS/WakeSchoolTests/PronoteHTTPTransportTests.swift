@@ -47,3 +47,12 @@ final class PronoteHTTPTransportTests: XCTestCase {
         }
     }
 }
+
+extension PronoteHTTPTransportTests {
+    func testBootstrapAcceptsDirectEleveURL() throws {
+        let html = #"<body onload="Start ({h:'42',sCrA:true,sCoA:true,a:3})">"#
+        let result = try PronoteHTTPTransport.parseSessionParameters(from: html)
+        XCTAssertEqual(result.sessionID, "42")
+        XCTAssertEqual(result.spaceID, 3)
+    }
+}

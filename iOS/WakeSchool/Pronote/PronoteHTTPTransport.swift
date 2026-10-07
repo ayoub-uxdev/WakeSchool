@@ -60,12 +60,15 @@ final class PronoteHTTPTransport: PronoteHTTPTransporting {
 
         let path: String
         if components.path.isEmpty || components.path == "/" {
-            path = "/pronote/"
+            path = "/pronote/mobile.eleve.html"
+        } else if components.path.lowercased().hasSuffix(".html") {
+            let directory = String(components.path[..<(components.path.lastIndex(of: "/") ?? components.path.endIndex)])
+            path = (directory.isEmpty ? "" : directory) + "/mobile.eleve.html"
         } else {
-            path = components.path.hasSuffix("/") ? components.path : components.path + "/"
+            path = (components.path.hasSuffix("/") ? components.path : components.path + "/") + "mobile.eleve.html"
         }
 
-        components.path = path + "mobile.eleve.html"
+        components.path = path
         components.queryItems = [URLQueryItem(name: "login", value: "true")]
 
         guard let url = components.url else {
