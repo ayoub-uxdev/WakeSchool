@@ -354,17 +354,16 @@ struct PronoteAuthenticationClient {
         )
 
         return PronoteAuthenticationResult(
-            sessionIV: session.sessionIV,
             serverURL: session.serverURL,
             sessionID: session.sessionID,
             spaceID: spaceID,
             requestNumber: 7,
             userName: userName,
             mobileToken: mobileToken,
-            authenticationKey: authenticationKey
+            authenticationKey: authenticationKey,
+            sessionIV: session.sessionIV
         )
     }
-
     // MARK: - Helpers
 
     private func send(

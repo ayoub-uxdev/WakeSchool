@@ -23,7 +23,7 @@ enum PronoteSessionError: Error, Equatable, LocalizedError {
     }
 }
 
-struct PronoteSessionClient {
+final class PronoteSessionClient {
     private let transport: PronoteHTTPTransporting
     private let session: PronoteAuthenticationResult
     private let serverURL: String
