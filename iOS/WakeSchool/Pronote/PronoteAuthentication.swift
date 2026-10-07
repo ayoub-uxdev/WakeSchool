@@ -161,7 +161,7 @@ struct PronoteAuthenticator {
         let encryptedOrder = try PronoteCrypto.aesCBCEncrypt(Data(String(requestNumber).utf8), key: key, iv: iv)
         let order = PronoteCodec.hex(encryptedOrder)
         let dataSec = try PronoteCodec.encodeDataSec(
-            object: data,
+            data,
             compressed: compressed,
             encrypted: encrypted,
             key: key,

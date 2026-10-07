@@ -28,7 +28,6 @@ final class PronoteSessionClient {
             key: key,
             iv: session.sessionIV
         )
-
         let body: [String: Any] = [
             "session": Int(session.sessionID) ?? 0,
             "no": order,
