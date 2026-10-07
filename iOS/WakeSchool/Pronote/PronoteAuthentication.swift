@@ -69,6 +69,8 @@ struct PronoteAuthenticationClient {
         // PRONOTE utilise le même IV communiqué lors de
         // FonctionParametres pour la suite de l'authentification.
         let sessionIV = session.sessionIV
+        let compressed = !session.skipRequestCompression
+        let encrypted = !session.skipRequestEncryption
 
         // ---------------------------------------------------------
         // 1. IDENTIFICATION
@@ -100,8 +102,8 @@ struct PronoteAuthenticationClient {
 
         let identificationDataSec = try PronoteCodec.encodeRequestDataSec(
             identificationWrapper,
-            compressed: true,
-            encrypted: true,
+            compressed: compressed,
+            encrypted: encrypted,
             key: defaultKey,
             iv: sessionIV
         )
@@ -123,8 +125,8 @@ struct PronoteAuthenticationClient {
 
         let identificationDecoded = try decodeResponse(
             identificationResponse,
-            compressed: true,
-            encrypted: true,
+            compressed: compressed,
+            encrypted: encrypted,
             key: defaultKey,
             iv: sessionIV
         )
@@ -261,8 +263,8 @@ struct PronoteAuthenticationClient {
 
         let authenticationDataSec = try PronoteCodec.encodeRequestDataSec(
             authenticationWrapper,
-            compressed: true,
-            encrypted: true,
+            compressed: compressed,
+            encrypted: encrypted,
             key: defaultKey,
             iv: sessionIV
         )
@@ -284,8 +286,8 @@ struct PronoteAuthenticationClient {
 
         let authenticationDecoded = try decodeResponse(
             authenticationResponse,
-            compressed: true,
-            encrypted: true,
+            compressed: compressed,
+            encrypted: encrypted,
             key: defaultKey,
             iv: sessionIV
         )
