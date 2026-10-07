@@ -34,6 +34,7 @@ enum PronoteFunctionParametersError: Error, Equatable, LocalizedError {
 }
 
 struct PronoteInitialSession {
+    let serverURL: String
     let sessionID: String
     let spaceID: Int
     let requestNumber: Int
@@ -176,6 +177,7 @@ struct PronoteFunctionParametersClient {
         }
 
         return PronoteInitialSession(
+            serverURL: serverURL,
             sessionID: session.sessionID,
             spaceID: session.spaceID,
             requestNumber: 3,
