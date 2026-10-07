@@ -2,35 +2,44 @@ import Foundation
 
 enum PronoteAuthenticationError: Error, Equatable, LocalizedError {
     case invalidCredentials
+    case invalidSession
     case invalidResponse
-    case missingChallenge
-    case invalidChallenge
-    case invalidChallengeResult
-    case missingAuthenticationKey
-    case invalidAuthenticationKey
     case invalidResponseOrder
-    case unsupportedDataSec
+    case missingChallenge
+    case missingAlea
+    case missingPasswordMode
+    case invalidChallenge
+    case invalidAuthenticationKey
+    case missingAuthenticationKey
+    case invalidMobileToken
+    case invalidServerURL
 
     var errorDescription: String? {
         switch self {
         case .invalidCredentials:
             return "Les identifiants PRONOTE sont invalides."
+        case .invalidSession:
+            return "La session PRONOTE est invalide."
         case .invalidResponse:
             return "La réponse PRONOTE est invalide."
-        case .missingChallenge:
-            return "PRONOTE n'a pas fourni de challenge."
-        case .invalidChallenge:
-            return "Le challenge PRONOTE est invalide."
-        case .invalidChallengeResult:
-            return "Impossible de résoudre le challenge PRONOTE."
-        case .missingAuthenticationKey:
-            return "PRONOTE n'a pas fourni de clé d'authentification."
-        case .invalidAuthenticationKey:
-            return "La clé d'authentification PRONOTE est invalide."
         case .invalidResponseOrder:
             return "Le numéro d'ordre de la réponse PRONOTE est invalide."
-        case .unsupportedDataSec:
-            return "Le format dataSec PRONOTE n'est pas pris en charge."
+        case .missingChallenge:
+            return "PRONOTE n'a pas fourni le challenge d'authentification."
+        case .missingAlea:
+            return "PRONOTE n'a pas fourni l'aléa d'authentification."
+        case .missingPasswordMode:
+            return "PRONOTE n'a pas fourni le mode de calcul du mot de passe."
+        case .invalidChallenge:
+            return "Le challenge PRONOTE est invalide."
+        case .invalidAuthenticationKey:
+            return "La clé d'authentification PRONOTE est invalide."
+        case .missingAuthenticationKey:
+            return "PRONOTE n'a pas fourni la clé d'authentification."
+        case .invalidMobileToken:
+            return "Le jeton mobile PRONOTE est invalide."
+        case .invalidServerURL:
+            return "L'URL du serveur PRONOTE est invalide."
         }
     }
 }
@@ -40,13 +49,14 @@ struct PronoteAuthenticationResult {
     let sessionID: String
     let spaceID: Int
     let requestNumber: Int
-    let userName: String?
+    let userName: String
     let mobileToken: String?
     let authenticationKey: Data
     let sessionIV: Data
 }
 
-struct PronoteAuthenticationClient {
+struct PronoteAuthentication {
+
     private let transport: PronoteHTTPTransporting
 
     init(transport: PronoteHTTPTransporting) {
@@ -64,16 +74,29 @@ struct PronoteAuthenticationClient {
             throw PronoteAuthenticationError.invalidCredentials
         }
 
-        let defaultKey = PronoteCrypto.aesKey(fromSeed: nil)
+        guard !session.sessionID.isEmpty else {
+            throw PronoteAuthenticationError.invalidSession
+        }
 
-        // PRONOTE utilise le même IV communiqué lors de
-        // FonctionParametres pour la suite de l'authentification.
+        guard
+            let serverURL = URL(string: session.serverURL),
+            serverURL.scheme != nil,
+            serverURL.host != nil
+        else {
+            throw PronoteAuthenticationError.invalidServerURL
+        }
+
+        let defaultKey = PronoteCrypto.aesKey(fromSeed: nil)
         let sessionIV = session.sessionIV
-        let compressed = !session.skipRequestCompression
-        let encrypted = !session.skipRequestEncryption
+
+        // FonctionParametres fournit actuellement une session
+        // dont les flags ne sont pas conservés dans PronoteInitialSession.
+        // PRONOTE utilise ici le chemin chiffré + compressé.
+        let compressed = true
+        let encrypted = true
 
         // ---------------------------------------------------------
-        // 1. IDENTIFICATION
+        // 1. Identification
         // ---------------------------------------------------------
 
         let identificationData: [String: Any] = [
@@ -94,7 +117,7 @@ struct PronoteAuthenticationClient {
             "data": identificationData
         ]
 
-        let identificationRequestNumber = try encryptedOrder(
+        let identificationNumber = try encryptedOrder(
             3,
             key: defaultKey,
             iv: sessionIV
@@ -108,19 +131,11 @@ struct PronoteAuthenticationClient {
             iv: sessionIV
         )
 
-        let identificationBody: [String: Any] = [
-            "session": Int(session.sessionID) ?? 0,
-            "no": identificationRequestNumber,
-            "id": "Identification",
-            "dataSec": identificationDataSec
-        ]
-
         let identificationResponse = try await send(
-            body: identificationBody,
-            serverURL: sessionServerURL(from: session),
-            spaceID: session.spaceID,
-            sessionID: session.sessionID,
-            requestNumber: identificationRequestNumber
+            function: "Identification",
+            requestNumber: identificationNumber,
+            dataSec: identificationDataSec,
+            session: session
         )
 
         let identificationDecoded = try decodeResponse(
@@ -131,123 +146,146 @@ struct PronoteAuthenticationClient {
             iv: sessionIV
         )
 
-        guard let identification = identificationDecoded as? [String: Any] else {
+        guard let identificationObject = identificationDecoded as? [String: Any] else {
             throw PronoteAuthenticationError.invalidResponse
         }
 
-        guard let challenge = stringValue(
-            named: "challenge",
-            in: identification
-        ) else {
+        let identificationDataObject =
+            (identificationObject["data"] as? [String: Any])
+            ?? identificationObject
+
+        guard
+            let challenge = stringValue(
+                named: "challenge",
+                in: identificationDataObject
+            )
+        else {
             throw PronoteAuthenticationError.missingChallenge
         }
 
-        let randomString = stringValue(
-            named: "alea",
-            in: identification
-        ) ?? ""
+        guard
+            let alea = stringValue(
+                named: "alea",
+                in: identificationDataObject
+            )
+        else {
+            throw PronoteAuthenticationError.missingAlea
+        }
 
-        let modeCompMdp = intValue(
-            named: "modeCompMdp",
-            in: identification
-        ) ?? 0
-
-        let modeCompLog = intValue(
-            named: "modeCompLog",
-            in: identification
-        ) ?? 0
-
-        let effectiveUsername = modeCompLog == 1
-            ? username.lowercased()
-            : username
-
-        let effectivePassword = modeCompMdp == 1
-            ? password.lowercased()
-            : password
+        guard
+            let modeCompMdp = intValue(
+                named: "modeCompMdp",
+                in: identificationDataObject
+            )
+        else {
+            throw PronoteAuthenticationError.missingPasswordMode
+        }
 
         // ---------------------------------------------------------
-        // 2. CALCUL DU MTP
+        // 2. Calcul du mot de passe PRONOTE
         // ---------------------------------------------------------
 
-        let shaInput = Data(
-            (randomString + effectivePassword).utf8
+        let effectivePassword: String
+
+        switch modeCompMdp {
+        case 0:
+            effectivePassword = password
+
+        default:
+            let passwordSeed = "\(alea)\(password)"
+            let passwordHash = PronoteCrypto.sha256(
+                Data(passwordSeed.utf8)
+            )
+
+            effectivePassword = PronoteCrypto.hexString(
+                from: passwordHash,
+                uppercase: true
+            )
+        }
+
+        // ---------------------------------------------------------
+        // 3. Clé du challenge
+        // ---------------------------------------------------------
+
+        let mtpSeed = "\(alea)\(effectivePassword)"
+
+        let mtpHash = PronoteCrypto.sha256(
+            Data(mtpSeed.utf8)
         )
 
-        let sha256 = PronoteCrypto.sha256(shaInput)
-
         let mtp = PronoteCrypto.hexString(
-            from: sha256,
+            from: mtpHash,
             uppercase: true
         )
 
-        // clé = MD5(username + mtp)
         let challengeKey = PronoteCrypto.md5(
-            Data((effectiveUsername + mtp).utf8)
+            Data("\(username)\(mtp)".utf8)
         )
 
         // ---------------------------------------------------------
-        // 3. DÉCHIFFREMENT DU CHALLENGE
+        // 4. Déchiffrement et résolution du challenge
         // ---------------------------------------------------------
 
-        guard let challengeData = try? PronoteCrypto.data(
-            fromHex: challenge
-        ) else {
-            throw PronoteAuthenticationError.invalidChallenge
-        }
-
-        let decryptedChallenge: Data
-
-        do {
-            decryptedChallenge = try PronoteCrypto.aesCBCDecrypt(
-                challengeData,
-                key: challengeKey,
-                iv: sessionIV
+        guard
+            let challengeData = PronoteCrypto.data(
+                fromHex: challenge
             )
-        } catch {
+        else {
             throw PronoteAuthenticationError.invalidChallenge
         }
 
-        guard let challengeText = String(
-            data: decryptedChallenge,
-            encoding: .utf8
-        ) else {
-            throw PronoteAuthenticationError.invalidChallenge
-        }
-
-        // PRONOTE conserve un caractère sur deux.
-        let solvedText = String(
-            challengeText.enumerated()
-                .compactMap { index, character in
-                    index.isMultiple(of: 2) ? character : nil
-                }
-        )
-
-        guard !solvedText.isEmpty else {
-            throw PronoteAuthenticationError.invalidChallengeResult
-        }
-
-        // ---------------------------------------------------------
-        // 4. RECHIFFREMENT DU CHALLENGE
-        // ---------------------------------------------------------
-
-        let solvedChallengeData = try PronoteCrypto.aesCBCEncrypt(
-            Data(solvedText.utf8),
+        let decryptedChallenge = try PronoteCrypto.aesCBCDecrypt(
+            challengeData,
             key: challengeKey,
             iv: sessionIV
         )
 
-        let solvedChallenge = PronoteCrypto.hexString(
-            from: solvedChallengeData,
+        guard
+            let challengeString = String(
+                data: decryptedChallenge,
+                encoding: .utf8
+            )
+        else {
+            throw PronoteAuthenticationError.invalidChallenge
+        }
+
+        let solvedChallengeCharacters = challengeString.filter {
+            $0.isNumber || $0.isLetter
+        }
+
+        let solvedChallenge = String(
+            solvedChallengeCharacters.enumerated().compactMap { index, character in
+                index.isMultiple(of: 2) ? character : nil
+            }
+        )
+
+        guard !solvedChallenge.isEmpty else {
+            throw PronoteAuthenticationError.invalidChallenge
+        }
+
+        let solvedChallengeData = Data(
+            solvedChallenge.utf8
+        )
+
+        let encryptedSolvedChallenge =
+            try PronoteCrypto.aesCBCEncrypt(
+                solvedChallengeData,
+                key: challengeKey,
+                iv: sessionIV
+            )
+
+        let solvedChallengeHex = PronoteCrypto.hexString(
+            from: encryptedSolvedChallenge,
             uppercase: true
         )
 
         // ---------------------------------------------------------
-        // 5. AUTHENTIFICATION
+        // 5. Authentification
         // ---------------------------------------------------------
 
         let authenticationData: [String: Any] = [
             "connexion": 0,
-            "challenge": solvedChallenge,
+            "challenge": solvedChallengeHex,
             "espace": spaceID
         ]
 
@@ -255,7 +293,7 @@ struct PronoteAuthenticationClient {
             "data": authenticationData
         ]
 
-        let authenticationRequestNumber = try encryptedOrder(
+        let authenticationNumber = try encryptedOrder(
             5,
             key: defaultKey,
             iv: sessionIV
@@ -269,19 +307,11 @@ struct PronoteAuthenticationClient {
             iv: sessionIV
         )
 
-        let authenticationBody: [String: Any] = [
-            "session": Int(session.sessionID) ?? 0,
-            "no": authenticationRequestNumber,
-            "id": "Authentification",
-            "dataSec": authenticationDataSec
-        ]
-
         let authenticationResponse = try await send(
-            body: authenticationBody,
-            serverURL: sessionServerURL(from: session),
-            spaceID: session.spaceID,
-            sessionID: session.sessionID,
-            requestNumber: authenticationRequestNumber
+            function: "Authentification",
+            requestNumber: authenticationNumber,
+            dataSec: authenticationDataSec,
+            session: session
         )
 
         let authenticationDecoded = try decodeResponse(
@@ -292,67 +322,65 @@ struct PronoteAuthenticationClient {
             iv: sessionIV
         )
 
-        guard let authentication = authenticationDecoded as? [String: Any] else {
+        guard let authenticationObject = authenticationDecoded as? [String: Any] else {
             throw PronoteAuthenticationError.invalidResponse
         }
 
+        let authenticationDataObject =
+            (authenticationObject["data"] as? [String: Any])
+            ?? authenticationObject
+
         // ---------------------------------------------------------
-        // 6. RÉCUPÉRATION DE "cle"
+        // 6. Récupération du jeton mobile
         // ---------------------------------------------------------
 
-        guard let encryptedKeyString = stringValue(
-            named: "cle",
-            in: authentication
-        ) else {
+        let mobileToken =
+            stringValue(
+                named: "jetonConnexionAppliMobile",
+                in: authenticationDataObject
+            )
+            ?? stringValue(
+                named: "mobileToken",
+                in: authenticationDataObject
+            )
+
+        // ---------------------------------------------------------
+        // 7. Récupération de la clé d'authentification
+        // ---------------------------------------------------------
+
+        guard
+            let cle = stringValue(
+                named: "cle",
+                in: authenticationDataObject
+            )
+        else {
             throw PronoteAuthenticationError.missingAuthenticationKey
         }
 
-        guard let encryptedKey = try? PronoteCrypto.data(
-            fromHex: encryptedKeyString
-        ) else {
-            throw PronoteAuthenticationError.invalidAuthenticationKey
-        }
-
-        let decryptedKey: Data
-
-        do {
-            decryptedKey = try PronoteCrypto.aesCBCDecrypt(
-                encryptedKey,
-                key: challengeKey,
-                iv: sessionIV
+        guard
+            let cleData = PronoteCrypto.data(
+                fromHex: cle
             )
-        } catch {
+        else {
             throw PronoteAuthenticationError.invalidAuthenticationKey
         }
 
-        guard let keyString = String(
-            data: decryptedKey,
-            encoding: .utf8
-        ) else {
+        let decryptedKey = try PronoteCrypto.aesCBCDecrypt(
+            cleData,
+            key: challengeKey,
+            iv: sessionIV
+        )
+
+        let authenticationKeyBytes = decryptedKey.map {
+            $0
+        }
+
+        guard !authenticationKeyBytes.isEmpty else {
             throw PronoteAuthenticationError.invalidAuthenticationKey
         }
 
-        let keyBytes = keyString
-            .split(separator: ",")
-            .compactMap { UInt8($0.trimmingCharacters(in: .whitespaces)) }
-
-        guard !keyBytes.isEmpty else {
-            throw PronoteAuthenticationError.invalidAuthenticationKey
-        }
-
-        // Nouvelle clé AES = MD5(bytes de "cle")
         let authenticationKey = PronoteCrypto.md5(
-            Data(keyBytes)
-        )
-
-        let userName = stringValue(
-            named: "libelleUtil",
-            in: authentication
-        )
-
-        let mobileToken = stringValue(
-            named: "jetonConnexionAppliMobile",
-            in: authentication
+            Data(authenticationKeyBytes)
         )
 
         return PronoteAuthenticationResult(
@@ -360,21 +388,32 @@ struct PronoteAuthenticationClient {
             sessionID: session.sessionID,
             spaceID: spaceID,
             requestNumber: 7,
-            userName: userName,
+            userName: username,
             mobileToken: mobileToken,
             authenticationKey: authenticationKey,
             sessionIV: session.sessionIV
         )
     }
-    // MARK: - Helpers
+
+    // MARK: - HTTP
 
     private func send(
-        body: [String: Any],
-        serverURL: String,
-        spaceID: Int,
-        sessionID: String,
-        requestNumber: String
-    ) async throws -> [String: Any] {
+        function: String,
+        requestNumber: String,
+        dataSec: String,
+        session: PronoteInitialSession
+    ) async throws -> Data {
+
+        guard let numericSessionID = Int(session.sessionID) else {
+            throw PronoteAuthenticationError.invalidSession
+        }
+
+        let body: [String: Any] = [
+            "session": numericSessionID,
+            "no": requestNumber,
+            "id": function,
+            "dataSec": dataSec
+        ]
 
         let bodyData = try JSONSerialization.data(
             withJSONObject: body,
@@ -382,51 +421,76 @@ struct PronoteAuthenticationClient {
         )
 
         let endpoint = try PronoteFunctionParametersClient.appelFonctionURL(
-            serverURL: serverURL,
-            spaceID: spaceID,
-            sessionID: sessionID,
+            serverURL: session.serverURL,
+            spaceID: session.spaceID,
+            sessionID: session.sessionID,
             requestNumber: requestNumber
         )
 
-        let responseData = try await transport.post(
+        return try await transport.post(
             to: endpoint,
             body: bodyData,
             additionalHeaders: [:]
         )
-
-        guard let response = try JSONSerialization.jsonObject(
-            with: responseData
-        ) as? [String: Any] else {
-            throw PronoteAuthenticationError.invalidResponse
-        }
-
-        return response
     }
 
+    // MARK: - Response
+
     private func decodeResponse(
-        _ response: [String: Any],
+        _ responseData: Data,
         compressed: Bool,
         encrypted: Bool,
         key: Data,
         iv: Data
     ) throws -> Any {
 
-        guard let dataSec = response["dataSec"] else {
+        guard
+            let response = try JSONSerialization.jsonObject(
+                with: responseData,
+                options: []
+            ) as? [String: Any]
+        else {
             throw PronoteAuthenticationError.invalidResponse
         }
 
-        guard let hex = dataSec as? String else {
-            throw PronoteAuthenticationError.unsupportedDataSec
+        guard let responseOrder = response["no"] as? String else {
+            throw PronoteAuthenticationError.invalidResponseOrder
+        }
+
+        let decodedOrder = try PronoteCrypto.data(
+            fromHex: responseOrder
+        )
+
+        let plainOrder = try PronoteCrypto.aesCBCDecrypt(
+            decodedOrder,
+            key: key,
+            iv: iv
+        )
+
+        guard
+            String(data: plainOrder, encoding: .utf8) != nil
+        else {
+            throw PronoteAuthenticationError.invalidResponseOrder
+        }
+
+        guard let responseDataSec = response["dataSec"] else {
+            throw PronoteAuthenticationError.invalidResponse
+        }
+
+        guard let responseHex = responseDataSec as? String else {
+            throw PronoteAuthenticationError.invalidResponse
         }
 
         return try PronoteCodec.decodeResponseDataSec(
-            hex,
+            responseHex,
             compressed: compressed,
             encrypted: encrypted,
             key: key,
             iv: iv
         )
     }
+
+    // MARK: - Crypto helpers
 
     private func encryptedOrder(
         _ number: Int,
@@ -446,23 +510,25 @@ struct PronoteAuthenticationClient {
         )
     }
 
-    private func sessionServerURL(
-        from session: PronoteInitialSession
-    ) -> String {
-        session.serverURL
-    }
+    // MARK: - Dictionary helpers
 
     private func stringValue(
         named name: String,
         in dictionary: [String: Any]
     ) -> String? {
-        dictionary[name] as? String
+
+        if let value = dictionary[name] as? String {
+            return value
+        }
+
+        return nil
     }
 
     private func intValue(
         named name: String,
         in dictionary: [String: Any]
     ) -> Int? {
+
         if let value = dictionary[name] as? Int {
             return value
         }
