@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 final class LivePronoteClient: PronoteClient {
     private let credentials: PronoteCredentials
@@ -71,9 +72,19 @@ final class LivePronoteClient: PronoteClient {
 
         let sessionParameters = try await transport.bootstrap(serverURL: credentials.serverURL)
         let functionClient = PronoteFunctionParametersClient(transport: transport)
+        var temporaryIV = Data(count: 16)
+        let randomStatus = temporaryIV.withUnsafeMutableBytes { buffer in
+            SecRandomCopyBytes(kSecRandomDefault, buffer.count, buffer.baseAddress!)
+        }
+        guard randomStatus == errSecSuccess else {
+            throw PronoteLiveError.randomGenerationFailed
+        }
+
         let initial = try await functionClient.start(
             session: sessionParameters,
-            clientIdentifier: options.clientIdentifier
+            serverURL: credentials.serverURL,
+            clientIdentifier: options.clientIdentifier,
+            temporaryIV: temporaryIV
         )
         let authenticator = PronoteAuthenticator(transport: transport)
         let authentication = try await authenticator.authenticate(
@@ -119,7 +130,11 @@ final class LivePronoteClient: PronoteClient {
 
 enum PronoteLiveError: Error, LocalizedError, Equatable {
     case missingResource
+    case randomGenerationFailed
     var errorDescription: String? {
-        switch self { case .missingResource: return "PRONOTE n'a pas fourni la ressource élève nécessaire pour récupérer les données." }
+        switch self {
+        case .missingResource: return "PRONOTE n'a pas fourni la ressource élève nécessaire pour récupérer les données."
+        case .randomGenerationFailed: return "Impossible de générer l'IV temporaire PRONOTE."
+        }
     }
 }

@@ -59,7 +59,13 @@ enum PronoteCodec {
 
     private static func process(_ data: Data,
                                 operation: compression_stream_operation) throws -> Data {
-        var stream = compression_stream()
+        var stream = compression_stream(
+            dst_ptr: nil,
+            dst_size: 0,
+            src_ptr: nil,
+            src_size: 0,
+            state: nil
+        )
         guard compression_stream_init(&stream, operation, COMPRESSION_ZLIB) != COMPRESSION_STATUS_ERROR else {
             throw operation == COMPRESSION_STREAM_ENCODE
                 ? PronoteCodecError.compressionFailed
