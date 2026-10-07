@@ -43,7 +43,7 @@ enum PronoteCodec {
         }
     }
 
-    // MARK: - DEFLATE
+    // MARK: - Raw DEFLATE
 
     static func deflate(_ data: Data) throws -> Data {
         guard !data.isEmpty else {
@@ -72,116 +72,98 @@ enum PronoteCodec {
         operation: compression_stream_operation
     ) throws -> Data {
 
-        let destinationCapacity = max(64 * 1024, data.count * 2)
+        var stream = compression_stream()
 
-        var output = Data()
+        let initializationStatus = withUnsafeMutablePointer(to: &stream) {
+            compression_stream_init(
+                $0,
+                operation,
+                COMPRESSION_ZLIB
+            )
+        }
 
-        var stream = compression_stream(
-            dst_ptr: nil,
-            dst_size: 0,
-            src_ptr: nil,
-            src_size: 0,
-            state: nil
-        )
-
-        let initStatus = compression_stream_init(
-            &stream,
-            operation,
-            COMPRESSION_ZLIB
-        )
-
-        guard initStatus != COMPRESSION_STATUS_ERROR else {
-            throw operation == COMPRESSION_STREAM_ENCODE
-                ? PronoteCodecError.compressionFailed
-                : PronoteCodecError.decompressionFailed
+        guard initializationStatus != COMPRESSION_STATUS_ERROR else {
+            if operation == COMPRESSION_STREAM_ENCODE {
+                throw PronoteCodecError.compressionFailed
+            } else {
+                throw PronoteCodecError.decompressionFailed
+            }
         }
 
         defer {
-            compression_stream_destroy(&stream)
+            withUnsafeMutablePointer(to: &stream) {
+                compression_stream_destroy($0)
+            }
         }
 
-        var buffer = [UInt8](
-            repeating: 0,
-            count: destinationCapacity
+        let bufferSize = 64 * 1024
+        let outputBuffer = UnsafeMutablePointer<UInt8>.allocate(
+            capacity: bufferSize
         )
 
-        let result: Data = try data.withUnsafeBytes { inputBuffer in
+        defer {
+            outputBuffer.deallocate()
+        }
 
-            guard let inputPointer = inputBuffer.bindMemory(
+        var result = Data()
+
+        let sourceResult = data.withUnsafeBytes {
+            rawBuffer -> Data? in
+
+            guard let sourcePointer = rawBuffer.bindMemory(
                 to: UInt8.self
             ).baseAddress else {
-                throw operation == COMPRESSION_STREAM_ENCODE
-                    ? PronoteCodecError.compressionFailed
-                    : PronoteCodecError.decompressionFailed
+                return Data()
             }
 
-            stream.src_ptr = inputPointer
+            stream.src_ptr = sourcePointer
             stream.src_size = data.count
-
-            var resultData = Data()
 
             while true {
 
-                let produced: Int = buffer.withUnsafeMutableBytes {
-                    destinationBuffer in
+                stream.dst_ptr = outputBuffer
+                stream.dst_size = bufferSize
 
-                    guard let destinationPointer =
-                        destinationBuffer.bindMemory(
-                            to: UInt8.self
-                        ).baseAddress
-                    else {
-                        return -1
-                    }
+                let status = compression_stream_process(
+                    &stream,
+                    Int32(COMPRESSION_STREAM_FINALIZE.rawValue)
+                )
 
-                    stream.dst_ptr = destinationPointer
-                    stream.dst_size = destinationCapacity
+                let bytesWritten = bufferSize - stream.dst_size
 
-                    let status = compression_stream_process(
-                        &stream,
-                        COMPRESSION_STREAM_FINALIZE
+                if bytesWritten > 0 {
+                    result.append(
+                        outputBuffer,
+                        count: bytesWritten
                     )
-
-                    let written =
-                        destinationCapacity - stream.dst_size
-
-                    if written > 0 {
-                        resultData.append(
-                            buffer,
-                            count: written
-                        )
-                    }
-
-                    if status == COMPRESSION_STATUS_ERROR {
-                        return -1
-                    }
-
-                    if status == COMPRESSION_STATUS_END {
-                        return -2
-                    }
-
-                    return written
                 }
 
-                if produced == -1 {
-                    throw operation == COMPRESSION_STREAM_ENCODE
-                        ? PronoteCodecError.compressionFailed
-                        : PronoteCodecError.decompressionFailed
+                if status == COMPRESSION_STATUS_END {
+                    return result
                 }
 
-                if produced == -2 {
-                    break
+                if status == COMPRESSION_STATUS_ERROR {
+                    return nil
+                }
+
+                if stream.src_size == 0 && bytesWritten == 0 {
+                    return nil
                 }
             }
-
-            return resultData
         }
 
-        output.append(result)
+        guard let sourceResult else {
+            if operation == COMPRESSION_STREAM_ENCODE {
+                throw PronoteCodecError.compressionFailed
+            } else {
+                throw PronoteCodecError.decompressionFailed
+            }
+        }
 
-        return output
+        return sourceResult
     }
 
-    // MARK: - HEX
+    // MARK: - Hex
 
     static func hex(_ data: Data) -> String {
         data.map {
@@ -191,127 +173,102 @@ enum PronoteCodec {
     }
 
     static func data(fromHex string: String) throws -> Data {
+        let cleaned = string.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
 
-        guard string.count.isMultiple(of: 2) else {
+        guard cleaned.count.isMultiple(of: 2) else {
             throw PronoteCodecError.invalidHex
         }
 
-        let bytes = Array(string.utf8)
+        var data = Data()
+        data.reserveCapacity(cleaned.count / 2)
 
-        var output = Data()
-        output.reserveCapacity(bytes.count / 2)
+        var index = cleaned.startIndex
 
-        for index in stride(
-            from: 0,
-            to: bytes.count,
-            by: 2
-        ) {
+        while index < cleaned.endIndex {
+            let nextIndex = cleaned.index(
+                index,
+                offsetBy: 2
+            )
 
-            guard
-                let high = nibble(bytes[index]),
-                let low = nibble(bytes[index + 1])
-            else {
+            let byteString = String(
+                cleaned[index..<nextIndex]
+            )
+
+            guard let byte = UInt8(
+                byteString,
+                radix: 16
+            ) else {
                 throw PronoteCodecError.invalidHex
             }
 
-            output.append(
-                (high << 4) | low
-            )
+            data.append(byte)
+            index = nextIndex
         }
 
-        return output
+        return data
     }
 
-    private static func nibble(
-        _ byte: UInt8
-    ) -> UInt8? {
-
-        switch byte {
-
-        case 48...57:
-            return byte - 48
-
-        case 65...70:
-            return byte - 55
-
-        case 97...102:
-            return byte - 87
-
-        default:
-            return nil
-        }
-    }
-
-    // MARK: - PRONOTE dataSec encoding
+    // MARK: - PRONOTE dataSec
 
     static func encodeRequestDataSec(
-        _ object: Any,
+        object: Any,
         compressed: Bool,
         encrypted: Bool,
         key: Data,
         iv: Data
     ) throws -> PronoteDataSec {
-
-        guard compressed || encrypted else {
-
-            guard JSONSerialization.isValidJSONObject(object) else {
-                throw PronoteCodecError.invalidJSON
-            }
-
-            return .jsonObject(object)
-        }
 
         var payload = try jsonData(object)
 
         if compressed {
-
-            /*
-             PRONOTE/pronotepy request behaviour:
-             JSON -> UTF8 -> HEX text -> raw DEFLATE
-            */
-
-            let jsonHex = hex(payload).lowercased()
-
-            payload = try deflate(
-                Data(jsonHex.utf8)
-            )
+            payload = try deflate(payload)
         }
 
         if encrypted {
-
-            payload = try PronoteCrypto.aesCBCEncrypt(
+            payload = try PronoteCrypto.aesEncrypt(
                 payload,
                 key: key,
                 iv: iv
             )
         }
 
-        return .encodedHex(
-            hex(payload)
-        )
+        return .encodedHex(hex(payload))
     }
 
-    // MARK: - PRONOTE dataSec decoding
-
     static func decodeResponseDataSec(
-        _ hexString: String,
+        _ dataSec: Any,
         compressed: Bool,
         encrypted: Bool,
         key: Data,
         iv: Data
     ) throws -> Any {
 
-        guard compressed || encrypted else {
-            throw PronoteCodecError.invalidHex
+        guard let hexString = dataSec as? String else {
+            if let dictionary = dataSec as? [String: Any] {
+                if let nested = dictionary["dataSec"] {
+                    return try decodeResponseDataSec(
+                        nested,
+                        compressed: compressed,
+                        encrypted: encrypted,
+                        key: key,
+                        iv: iv
+                    )
+                }
+
+                if let data = dictionary["data"] {
+                    return data
+                }
+            }
+
+            return dataSec
         }
 
-        var payload = try data(
-            fromHex: hexString
-        )
+        var payload = try data(fromHex: hexString)
 
         if encrypted {
-
-            payload = try PronoteCrypto.aesCBCDecrypt(
+            payload = try PronoteCrypto.aesDecrypt(
                 payload,
                 key: key,
                 iv: iv
@@ -319,54 +276,9 @@ enum PronoteCodec {
         }
 
         if compressed {
-
-            payload = try inflate(
-                payload
-            )
+            payload = try inflate(payload)
         }
 
-        /*
-         Response compression is JSON UTF8 after DEFLATE.
-        */
-
-        return try jsonObject(
-            from: payload
-        )
-    }
-
-    // MARK: - Compatibility aliases
-
-    static func encodeDataSec(
-        _ object: Any,
-        compressed: Bool,
-        encrypted: Bool,
-        key: Data,
-        iv: Data
-    ) throws -> PronoteDataSec {
-
-        try encodeRequestDataSec(
-            object,
-            compressed: compressed,
-            encrypted: encrypted,
-            key: key,
-            iv: iv
-        )
-    }
-
-    static func decodeDataSec(
-        _ hexString: String,
-        compressed: Bool,
-        encrypted: Bool,
-        key: Data,
-        iv: Data
-    ) throws -> Any {
-
-        try decodeResponseDataSec(
-            hexString,
-            compressed: compressed,
-            encrypted: encrypted,
-            key: key,
-            iv: iv
-        )
+        return try jsonObject(from: payload)
     }
 }
