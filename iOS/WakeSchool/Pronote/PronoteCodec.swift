@@ -59,7 +59,14 @@ enum PronoteCodec {
 
     private static func process(_ data: Data,
                                 operation: compression_stream_operation) throws -> Data {
-        var stream = compression_stream()
+        var stream = compression_stream(
+            dst_ptr: nil,
+            dst_size: 0,
+            src_ptr: nil,
+            src_size: 0,
+            state: nil
+        )
+
         guard compression_stream_init(&stream, operation, COMPRESSION_ZLIB) != COMPRESSION_STATUS_ERROR else {
             throw operation == COMPRESSION_STREAM_ENCODE
                 ? PronoteCodecError.compressionFailed
@@ -86,12 +93,12 @@ enum PronoteCodec {
 
             var status: compression_status = COMPRESSION_STATUS_OK
             repeat {
-                buffer.withUnsafeMutableBytes { rawOutput in
+                // Keep the destination pointer valid for the whole process call.
+                status = buffer.withUnsafeMutableBytes { rawOutput in
                     stream.dst_ptr = rawOutput.bindMemory(to: UInt8.self).baseAddress!
                     stream.dst_size = outputCapacity
+                    return compression_stream_process(&stream, finalize)
                 }
-
-                status = compression_stream_process(&stream, finalize)
 
                 let produced = outputCapacity - stream.dst_size
                 if produced > 0 {
@@ -99,12 +106,10 @@ enum PronoteCodec {
                 }
 
                 if status == COMPRESSION_STATUS_ERROR {
-                    return
+                    throw operation == COMPRESSION_STREAM_ENCODE
+                        ? PronoteCodecError.compressionFailed
+                        : PronoteCodecError.decompressionFailed
                 }
-
-                // END signifie que le flux est entièrement terminé.
-                // OK signifie qu'il faut continuer, typiquement parce que le tampon
-                // de sortie était plein ou que le flux n'avait pas encore terminé.
             } while status == COMPRESSION_STATUS_OK
 
             guard status == COMPRESSION_STATUS_END else {
@@ -115,6 +120,7 @@ enum PronoteCodec {
             return output
         }
     }
+
 
     static func hex(_ data: Data) -> String {
         data.map { String(format: "%02X", $0) }.joined()
