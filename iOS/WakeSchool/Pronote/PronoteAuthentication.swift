@@ -13,6 +13,7 @@ enum PronoteAuthenticationError: Error, Equatable, LocalizedError {
     case missingAuthenticationKey
     case invalidMobileToken
     case invalidServerURL
+    case invalidDataSec
 
     var errorDescription: String? {
         switch self {
@@ -40,6 +41,8 @@ enum PronoteAuthenticationError: Error, Equatable, LocalizedError {
             return "Le jeton mobile PRONOTE est invalide."
         case .invalidServerURL:
             return "L'URL du serveur PRONOTE est invalide."
+        case .invalidDataSec:
+            return "Le dataSec PRONOTE n'est pas au format attendu."
         }
     }
 }
@@ -89,15 +92,14 @@ struct PronoteAuthentication {
         let defaultKey = PronoteCrypto.aesKey(fromSeed: nil)
         let sessionIV = session.sessionIV
 
-        // FonctionParametres fournit actuellement une session
-        // dont les flags ne sont pas conservés dans PronoteInitialSession.
-        // PRONOTE utilise ici le chemin chiffré + compressé.
+        // Pour l'instant, PronoteInitialSession ne conserve pas
+        // les flags sCrA / sCoA récupérés au bootstrap.
         let compressed = true
         let encrypted = true
 
-        // ---------------------------------------------------------
-        // 1. Identification
-        // ---------------------------------------------------------
+        // =========================================================
+        // 1. IDENTIFICATION
+        // =========================================================
 
         let identificationData: [String: Any] = [
             "genreConnexion": 0,
@@ -131,10 +133,14 @@ struct PronoteAuthentication {
             iv: sessionIV
         )
 
+        let identificationDataSecString = try dataSecString(
+            identificationDataSec
+        )
+
         let identificationResponse = try await send(
             function: "Identification",
             requestNumber: identificationNumber,
-            dataSec: identificationDataSec,
+            dataSec: identificationDataSecString,
             session: session
         )
 
@@ -181,9 +187,9 @@ struct PronoteAuthentication {
             throw PronoteAuthenticationError.missingPasswordMode
         }
 
-        // ---------------------------------------------------------
-        // 2. Calcul du mot de passe PRONOTE
-        // ---------------------------------------------------------
+        // =========================================================
+        // 2. CALCUL DU MOT DE PASSE
+        // =========================================================
 
         let effectivePassword: String
 
@@ -193,6 +199,7 @@ struct PronoteAuthentication {
 
         default:
             let passwordSeed = "\(alea)\(password)"
+
             let passwordHash = PronoteCrypto.sha256(
                 Data(passwordSeed.utf8)
             )
@@ -203,9 +210,9 @@ struct PronoteAuthentication {
             )
         }
 
-        // ---------------------------------------------------------
-        // 3. Clé du challenge
-        // ---------------------------------------------------------
+        // =========================================================
+        // 3. CLÉ DU CHALLENGE
+        // =========================================================
 
         let mtpSeed = "\(alea)\(effectivePassword)"
 
@@ -222,15 +229,13 @@ struct PronoteAuthentication {
             Data("\(username)\(mtp)".utf8)
         )
 
-        // ---------------------------------------------------------
-        // 4. Déchiffrement et résolution du challenge
-        // ---------------------------------------------------------
+        // =========================================================
+        // 4. DÉCHIFFREMENT DU CHALLENGE
+        // =========================================================
 
-        guard
-            let challengeData = PronoteCrypto.data(
-                fromHex: challenge
-            )
-        else {
+        guard let challengeData = try? PronoteCrypto.data(
+            fromHex: challenge
+        ) else {
             throw PronoteAuthenticationError.invalidChallenge
         }
 
@@ -249,12 +254,8 @@ struct PronoteAuthentication {
             throw PronoteAuthenticationError.invalidChallenge
         }
 
-        let solvedChallengeCharacters = challengeString.filter {
-            $0.isNumber || $0.isLetter
-        }
-
         let solvedChallenge = String(
-            solvedChallengeCharacters.enumerated().compactMap { index, character in
+            challengeString.enumerated().compactMap { index, character in
                 index.isMultiple(of: 2) ? character : nil
             }
         )
@@ -263,25 +264,20 @@ struct PronoteAuthentication {
             throw PronoteAuthenticationError.invalidChallenge
         }
 
-        let solvedChallengeData = Data(
-            solvedChallenge.utf8
+        let encryptedSolvedChallenge = try PronoteCrypto.aesCBCEncrypt(
+            Data(solvedChallenge.utf8),
+            key: challengeKey,
+            iv: sessionIV
         )
-
-        let encryptedSolvedChallenge =
-            try PronoteCrypto.aesCBCEncrypt(
-                solvedChallengeData,
-                key: challengeKey,
-                iv: sessionIV
-            )
 
         let solvedChallengeHex = PronoteCrypto.hexString(
             from: encryptedSolvedChallenge,
             uppercase: true
         )
 
-        // ---------------------------------------------------------
-        // 5. Authentification
-        // ---------------------------------------------------------
+        // =========================================================
+        // 5. AUTHENTIFICATION
+        // =========================================================
 
         let authenticationData: [String: Any] = [
             "connexion": 0,
@@ -307,10 +303,14 @@ struct PronoteAuthentication {
             iv: sessionIV
         )
 
+        let authenticationDataSecString = try dataSecString(
+            authenticationDataSec
+        )
+
         let authenticationResponse = try await send(
             function: "Authentification",
             requestNumber: authenticationNumber,
-            dataSec: authenticationDataSec,
+            dataSec: authenticationDataSecString,
             session: session
         )
 
@@ -330,9 +330,9 @@ struct PronoteAuthentication {
             (authenticationObject["data"] as? [String: Any])
             ?? authenticationObject
 
-        // ---------------------------------------------------------
-        // 6. Récupération du jeton mobile
-        // ---------------------------------------------------------
+        // =========================================================
+        // 6. JETON MOBILE
+        // =========================================================
 
         let mobileToken =
             stringValue(
@@ -344,9 +344,9 @@ struct PronoteAuthentication {
                 in: authenticationDataObject
             )
 
-        // ---------------------------------------------------------
-        // 7. Récupération de la clé d'authentification
-        // ---------------------------------------------------------
+        // =========================================================
+        // 7. CLÉ D'AUTHENTIFICATION
+        // =========================================================
 
         guard
             let cle = stringValue(
@@ -357,11 +357,11 @@ struct PronoteAuthentication {
             throw PronoteAuthenticationError.missingAuthenticationKey
         }
 
-        guard
-            let cleData = PronoteCrypto.data(
-                fromHex: cle
-            )
-        else {
+        let cleData: Data
+
+        do {
+            cleData = try PronoteCrypto.data(fromHex: cle)
+        } catch {
             throw PronoteAuthenticationError.invalidAuthenticationKey
         }
 
@@ -371,16 +371,12 @@ struct PronoteAuthentication {
             iv: sessionIV
         )
 
-        let authenticationKeyBytes = decryptedKey.map {
-            $0
-        }
-
-        guard !authenticationKeyBytes.isEmpty else {
+        guard !decryptedKey.isEmpty else {
             throw PronoteAuthenticationError.invalidAuthenticationKey
         }
 
         let authenticationKey = PronoteCrypto.md5(
-            Data(authenticationKeyBytes)
+            decryptedKey
         )
 
         return PronoteAuthenticationResult(
@@ -395,7 +391,9 @@ struct PronoteAuthentication {
         )
     }
 
-    // MARK: - HTTP
+    // =============================================================
+    // HTTP
+    // =============================================================
 
     private func send(
         function: String,
@@ -434,7 +432,9 @@ struct PronoteAuthentication {
         )
     }
 
-    // MARK: - Response
+    // =============================================================
+    // RESPONSE
+    // =============================================================
 
     private func decodeResponse(
         _ responseData: Data,
@@ -467,9 +467,7 @@ struct PronoteAuthentication {
             iv: iv
         )
 
-        guard
-            String(data: plainOrder, encoding: .utf8) != nil
-        else {
+        guard String(data: plainOrder, encoding: .utf8) != nil else {
             throw PronoteAuthenticationError.invalidResponseOrder
         }
 
@@ -490,7 +488,26 @@ struct PronoteAuthentication {
         )
     }
 
-    // MARK: - Crypto helpers
+    // =============================================================
+    // DATASEC
+    // =============================================================
+
+    private func dataSecString(
+        _ dataSec: PronoteDataSec
+    ) throws -> String {
+
+        switch dataSec {
+        case .encodedHex(let value):
+            return value
+
+        case .jsonObject:
+            throw PronoteAuthenticationError.invalidDataSec
+        }
+    }
+
+    // =============================================================
+    // CRYPTO
+    // =============================================================
 
     private func encryptedOrder(
         _ number: Int,
@@ -510,7 +527,9 @@ struct PronoteAuthentication {
         )
     }
 
-    // MARK: - Dictionary helpers
+    // =============================================================
+    // HELPERS
+    // =============================================================
 
     private func stringValue(
         named name: String,
