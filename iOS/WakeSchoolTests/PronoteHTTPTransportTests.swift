@@ -26,6 +26,19 @@ final class PronoteHTTPTransportTests: XCTestCase {
         XCTAssertTrue(result.requestsAreCompressed)
     }
 
+    func testParsesSessionParametersFromMobileAppPage() throws {
+        let html = """
+        <script>
+        window.addEventListener("load", () => {try{Start ({"h":4873407,"d":true,"a":6});} catch (e) {IE.sendLogFailStart (4873407, e)}});
+        </script>
+        """
+
+        let result = try PronoteHTTPTransport.parseSessionParameters(from: html)
+
+        XCTAssertEqual(result.sessionID, "4873407")
+        XCTAssertEqual(result.spaceID, 6)
+    }
+
     func testNestedObjectDoesNotBreakParsing() throws {
         let html = #"<body onload="Start ({h:'42',sCrA:false,sCoA:true,a:3,d:true,extra:{foo:'bar'}})">"#
         let result = try PronoteHTTPTransport.parseSessionParameters(from: html)

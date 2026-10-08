@@ -40,6 +40,9 @@ protocol PronoteHTTPTransporting {
 }
 
 final class PronoteHTTPTransport: PronoteHTTPTransporting {
+    private static let pronoteMobileUserAgent =
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 19_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 PRONOTE Mobile APP Version/2.0.11"
+
     private let session: URLSession
 
     init(session: URLSession = .shared) {
@@ -50,7 +53,7 @@ final class PronoteHTTPTransport: PronoteHTTPTransporting {
         let directURL = try Self.normalizeDirectURL(serverURL)
         var request = URLRequest(url: directURL)
         request.httpMethod = "GET"
-        request.setValue("iPhone", forHTTPHeaderField: "User-Agent")
+        request.setValue(Self.pronoteMobileUserAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
 
         let (data, response) = try await session.data(for: request)
@@ -72,7 +75,7 @@ final class PronoteHTTPTransport: PronoteHTTPTransporting {
         request.httpBody = body
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("iPhone", forHTTPHeaderField: "User-Agent")
+        request.setValue(Self.pronoteMobileUserAgent, forHTTPHeaderField: "User-Agent")
         additionalHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
 
         let (data, response) = try await session.data(for: request)
