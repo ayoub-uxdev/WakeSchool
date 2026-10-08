@@ -36,11 +36,14 @@ final class PronoteSessionClient {
             iv: session.sessionIV
         )
 
+        let properties = PronoteAPIProperties.forVersion(
+            session.version
+        )
         let body: [String: Any] = [
             "session": Int(session.sessionID) ?? 0,
-            "no": order,
-            "id": function,
-            "dataSec": Self.dataSecJSON(dataSec)
+            properties.orderNumber: order,
+            properties.requestID: function,
+            properties.secureData: Self.dataSecJSON(dataSec)
         ]
 
         let bodyData = try JSONSerialization.data(
@@ -104,7 +107,16 @@ final class PronoteSessionClient {
             )
         }
 
-        if let responseDataSec = response["dataSec"] as? String {
+        if let responseDataSec = response[properties.secureData] as? String {
+            response[properties.secureData] = try PronoteCodec.decodeDataSec(
+                responseDataSec,
+                compressed: session.requestsAreCompressed,
+                encrypted: session.requestsAreEncrypted,
+                key: key,
+                iv: session.sessionIV
+            )
+        } else if properties.secureData != "dataSec",
+                  let responseDataSec = response["dataSec"] as? String {
             response["dataSec"] = try PronoteCodec.decodeDataSec(
                 responseDataSec,
                 compressed: session.requestsAreCompressed,
@@ -131,8 +143,12 @@ final class PronoteSessionClient {
         resource: [String: Any]
     ) async throws -> Any {
 
+        let properties = PronoteAPIProperties.forVersion(session.version)
+        let signatureKey = session.version.lexicographicallyPrecedes([2024, 3, 9])
+            ? "_Signature_"
+            : "Signature"
         let payload: [String: Any] = [
-            "data": [
+            properties.data: [
                 "ressource": resource,
                 "Ressource": resource,
                 "numeroSemaine": weekNumber,
@@ -144,7 +160,7 @@ final class PronoteSessionClient {
                 "avecDisponibilites": true,
                 "avecInfosPrefsGrille": true
             ],
-            "_Signature_": [
+            signatureKey: [
                 "onglet": 16
             ]
         ]
@@ -161,15 +177,19 @@ final class PronoteSessionClient {
         resource: [String: Any]
     ) async throws -> Any {
 
+        let properties = PronoteAPIProperties.forVersion(session.version)
+        let signatureKey = session.version.lexicographicallyPrecedes([2024, 3, 9])
+            ? "_Signature_"
+            : "Signature"
         let payload: [String: Any] = [
-            "data": [
+            properties.data: [
                 "ressource": resource,
                 "Ressource": resource,
                 "dateDebut": Self.dayString(start),
                 "dateFin": Self.dayString(end),
                 "avecRessource": true
             ],
-            "_Signature_": [
+            signatureKey: [
                 "onglet": 20
             ]
         ]
@@ -181,11 +201,15 @@ final class PronoteSessionClient {
     }
 
     func grades(period: [String: Any]) async throws -> Any {
+        let properties = PronoteAPIProperties.forVersion(session.version)
+        let signatureKey = session.version.lexicographicallyPrecedes([2024, 3, 9])
+            ? "_Signature_"
+            : "Signature"
         let payload: [String: Any] = [
-            "data": [
+            properties.data: [
                 "periode": period
             ],
-            "_Signature_": [
+            signatureKey: [
                 "onglet": 198
             ]
         ]

@@ -5,6 +5,10 @@ struct PronoteQRCode: Codable, Equatable {
     let login: String
     let jeton: String
     let url: String
+
+    var accountKind: PronoteAccountKind? {
+        PronoteAccountKind(qrURL: url)
+    }
 }
 
 struct PronoteQRLoginResult: Equatable {
@@ -19,6 +23,7 @@ enum PronoteQRLoginError: Error, LocalizedError, Equatable {
     case decryptionFailed
     case emptyCredentials
     case missingMobileToken
+    case invalidCredentials
 
     var errorDescription: String? {
         switch self {
@@ -34,6 +39,8 @@ enum PronoteQRLoginError: Error, LocalizedError, Equatable {
             return "Le QR code PRONOTE ne contient pas de données de connexion valides."
         case .missingMobileToken:
             return "PRONOTE n'a pas fourni le nouveau jeton de connexion mobile."
+        case .invalidCredentials:
+            return "Saisis l’adresse PRONOTE, l’identifiant et le mot de passe."
         }
     }
 }
@@ -49,7 +56,8 @@ enum PronoteQRLogin {
               let qr = try? JSONDecoder().decode(PronoteQRCode.self, from: data),
               !qr.login.isEmpty,
               !qr.jeton.isEmpty,
-              !qr.url.isEmpty else {
+              !qr.url.isEmpty,
+              qr.accountKind != nil else {
             throw PronoteQRLoginError.invalidQRCode
         }
 
@@ -74,7 +82,15 @@ enum PronoteQRLogin {
             }
 
             let url = try normalizeQRURL(qr.url)
-            return PronoteDecodedCredentials(serverURL: url, username: login, password: token)
+            guard let accountKind = qr.accountKind else {
+                throw PronoteQRLoginError.invalidURL
+            }
+            return PronoteDecodedCredentials(
+                serverURL: url,
+                username: login,
+                password: token,
+                accountKind: accountKind
+            )
         } catch let error as PronoteQRLoginError {
             throw error
         } catch {
@@ -91,15 +107,22 @@ enum PronoteQRLogin {
         }
 
         var path = components.path
-        if path.isEmpty {
-            path = "/pronote/mobile.eleve.html"
+        if let component = path.split(separator: "/").last {
+            let accountPath = String(component)
+                .replacingOccurrences(of: "mobile.", with: "")
+                .replacingOccurrences(of: ".html", with: "")
+                .lowercased()
+
+            if ["eleve", "parent", "professeur"].contains(accountPath) {
+                path = String(path.dropLast(component.count))
+                while path.count > 1 && path.hasSuffix("/") {
+                    path.removeLast()
+                }
+            }
         }
 
         components.path = path
-        var query = components.queryItems ?? []
-        query.removeAll { $0.name == "login" }
-        query.append(URLQueryItem(name: "login", value: "true"))
-        components.queryItems = query
+        components.query = nil
         components.fragment = nil
 
         guard let url = components.url else {
@@ -113,6 +136,7 @@ struct PronoteDecodedCredentials: Equatable {
     let serverURL: String
     let username: String
     let password: String
+    let accountKind: PronoteAccountKind
 }
 
 /// Identité stable de cette installation WakeSchool.

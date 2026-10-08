@@ -43,10 +43,11 @@ final class LivePronoteClient: PronoteClient {
 
         let mobileUUID = try PronoteMobileIdentity.sharedUUID()
 
-        let credentials = PronoteCredentials(
+        var credentials = PronoteCredentials(
             serverURL: decoded.serverURL,
             username: decoded.username,
             password: decoded.password,
+            accountKind: decoded.accountKind,
             usesMobileToken: true,
             mobileUUID: mobileUUID
         )
@@ -55,7 +56,8 @@ final class LivePronoteClient: PronoteClient {
             useENT: false,
             mobileUUID: mobileUUID,
             clientIdentifier: mobileUUID,
-            mobileToken: decoded.password,
+            mobileToken: nil,
+            requestFirstMobileAuthentication: true,
             qrLogin: true
         )
 
@@ -65,6 +67,56 @@ final class LivePronoteClient: PronoteClient {
         )
 
         let profile = try await client.profile()
+        if let refreshedToken = try await client.refreshedMobileToken(),
+           !refreshedToken.isEmpty {
+            credentials.password = refreshedToken
+        }
+
+        return PronoteQRLoginResult(
+            credentials: credentials,
+            displayName: profile.displayName
+        )
+    }
+
+    /// Logs in with a school's direct PRONOTE credentials (not an ENT SSO login).
+    static func loginWithCredentials(
+        serverURL: String,
+        username: String,
+        password: String,
+        accountKind: PronoteAccountKind
+    ) async throws -> PronoteQRLoginResult {
+        let normalizedUsername = username.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !normalizedUsername.isEmpty,
+              !password.isEmpty else {
+            throw PronoteQRLoginError.invalidCredentials
+        }
+
+        let mobileUUID = try PronoteMobileIdentity.sharedUUID()
+        var credentials = PronoteCredentials(
+            serverURL: serverURL,
+            username: normalizedUsername,
+            password: password,
+            accountKind: accountKind,
+            mobileUUID: mobileUUID
+        )
+        let client = LivePronoteClient(
+            credentials: credentials,
+            options: PronoteLoginOptions(
+                mobileUUID: mobileUUID,
+                clientIdentifier: mobileUUID,
+                requestFirstMobileAuthentication: true
+            )
+        )
+
+        let profile = try await client.profile()
+        if let refreshedToken = try await client.refreshedMobileToken(),
+           !refreshedToken.isEmpty {
+            credentials.password = refreshedToken
+            credentials.usesMobileToken = true
+        }
 
         return PronoteQRLoginResult(
             credentials: credentials,
@@ -250,7 +302,8 @@ final class LivePronoteClient: PronoteClient {
 
         let sessionParameters =
             try await transport.bootstrap(
-                serverURL: credentials.serverURL
+                serverURL: credentials.serverURL,
+                accountKind: credentials.accountKind
             )
 
         let functionClient =
@@ -280,7 +333,6 @@ final class LivePronoteClient: PronoteClient {
         let initial =
             try await functionClient.start(
                 session: sessionParameters,
-                serverURL: credentials.serverURL,
                 clientIdentifier: options.clientIdentifier,
                 temporaryIV: temporaryIV
             )

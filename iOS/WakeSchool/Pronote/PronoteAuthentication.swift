@@ -5,6 +5,7 @@ struct PronoteLoginOptions {
     var mobileUUID: String? = nil
     var clientIdentifier: String? = nil
     var mobileToken: String? = nil
+    var requestFirstMobileAuthentication: Bool = false
     var qrLogin: Bool = false
 }
 
@@ -63,6 +64,7 @@ struct PronoteAuthenticator {
 
         let isQRLogin = options.qrLogin
         let isTokenLogin = options.mobileToken != nil
+        let apiProperties = PronoteAPIProperties.forVersion(session.version)
 
         let identification: [String: Any] = [
             "genreConnexion": 0,
@@ -71,16 +73,16 @@ struct PronoteAuthenticator {
             "pourENT": options.useENT,
             "enConnexionAuto": false,
             "demandeConnexionAuto": false,
-            "demandeConnexionAppliMobile": isQRLogin,
+            "demandeConnexionAppliMobile": options.requestFirstMobileAuthentication,
             "demandeConnexionAppliMobileJeton": isQRLogin,
             "enConnexionAppliMobile": isTokenLogin,
             "uuidAppliMobile": options.mobileUUID ?? "",
-            "loginTokenSAV": ""
+            "loginTokenSAV": options.mobileToken ?? ""
         ]
 
         let identificationResponse = try await post(
             function: "Identification",
-            data: ["data": identification],
+            data: [apiProperties.data: identification],
             session: session,
             requestNumber: initial.requestNumber,
             key: defaultKey,
@@ -89,7 +91,10 @@ struct PronoteAuthenticator {
             encrypted: initial.requestsAreEncrypted
         )
 
-        let identificationData = try Self.dataDictionary(from: identificationResponse)
+        let identificationData = try Self.dataDictionary(
+            from: identificationResponse,
+            version: session.version
+        )
         let challenge = try Self.string(identificationData["challenge"], field: "challenge")
         let alea = (identificationData["alea"] as? String) ?? ""
         let modeCompMdp = Self.int(identificationData["modeCompMdp"]) == 1
@@ -155,7 +160,7 @@ struct PronoteAuthenticator {
 
         let authResponse = try await post(
             function: "Authentification",
-            data: ["data": authData],
+            data: [apiProperties.data: authData],
             session: session,
             requestNumber: initial.requestNumber + 2,
             key: authKey,
@@ -164,7 +169,10 @@ struct PronoteAuthenticator {
             encrypted: initial.requestsAreEncrypted
         )
 
-        let authenticatedData = try Self.dataDictionary(from: authResponse)
+        let authenticatedData = try Self.dataDictionary(
+            from: authResponse,
+            version: session.version
+        )
         guard let cle = authenticatedData["cle"] as? String else {
             throw PronoteAuthenticationError.missingSessionKey
         }
@@ -218,11 +226,12 @@ struct PronoteAuthenticator {
             iv: iv
         )
 
+        let properties = PronoteAPIProperties.forVersion(session.version)
         let body: [String: Any] = [
             "session": Int(session.sessionID) ?? 0,
-            "no": order,
-            "id": function,
-            "dataSec": Self.dataSecJSON(dataSec)
+            properties.orderNumber: order,
+            properties.requestID: function,
+            properties.secureData: Self.dataSecJSON(dataSec)
         ]
 
         let bodyData = try JSONSerialization.data(withJSONObject: body, options: [])
@@ -252,7 +261,17 @@ struct PronoteAuthenticator {
             _ = Int(String(data: plain, encoding: .utf8) ?? "")
         }
 
-        if let responseDataSec = response["dataSec"] as? String {
+        let secureDataKey = properties.secureData
+        if let responseDataSec = response[secureDataKey] as? String {
+            response[secureDataKey] = try PronoteCodec.decodeDataSec(
+                responseDataSec,
+                compressed: compressed,
+                encrypted: encrypted,
+                key: key,
+                iv: iv
+            )
+        } else if secureDataKey != "dataSec",
+                  let responseDataSec = response["dataSec"] as? String {
             response["dataSec"] = try PronoteCodec.decodeDataSec(
                 responseDataSec,
                 compressed: compressed,
@@ -274,14 +293,22 @@ struct PronoteAuthenticator {
         }
     }
 
-    private static func dataDictionary(from response: [String: Any]) throws -> [String: Any] {
-        if let dataSec = response["dataSec"] as? [String: Any] {
+    private static func dataDictionary(
+        from response: [String: Any],
+        version: [Int]
+    ) throws -> [String: Any] {
+        let properties = PronoteAPIProperties.forVersion(version)
+
+        if let dataSec = response[properties.secureData] as? [String: Any] {
+            if let data = dataSec[properties.data] as? [String: Any] { return data }
             if let data = dataSec["data"] as? [String: Any] { return data }
             if let donnees = dataSec["donnees"] as? [String: Any] { return donnees }
             return dataSec
         }
 
-        if let dataSec = response["donneesSec"] as? [String: Any] {
+        if let dataSec = response["dataSec"] as? [String: Any]
+            ?? response["donneesSec"] as? [String: Any] {
+            if let data = dataSec["data"] as? [String: Any] { return data }
             if let donnees = dataSec["donnees"] as? [String: Any] { return donnees }
             return dataSec
         }

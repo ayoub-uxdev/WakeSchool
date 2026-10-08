@@ -5,6 +5,11 @@ struct PronoteLoginView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var pin = ""
+    @State private var serverURL = ""
+    @State private var username = ""
+    @State private var password = ""
+    @State private var accountKind: PronoteAccountKind = .student
+    @State private var loginMethod: LoginMethod = .qrCode
     @State private var isConnecting = false
     @State private var errorMessage: String?
     @State private var showingScanner = false
@@ -15,8 +20,14 @@ struct PronoteLoginView: View {
             ScrollView {
                 VStack(spacing: 24) {
                     header
-                    qrSection
-                    pinSection
+                    loginMethodPicker
+
+                    if loginMethod == .qrCode {
+                        qrSection
+                        pinSection
+                    } else {
+                        credentialsSection
+                    }
 
                     if let errorMessage {
                         errorView(message: errorMessage)
@@ -24,7 +35,7 @@ struct PronoteLoginView: View {
 
                     connectButton
 
-                    Text("Le QR code et le jeton PRONOTE sont utilisés uniquement pour connecter cet iPhone. Les données sensibles restent dans le Keychain.")
+                    Text("Les données sensibles sont conservées uniquement dans le Keychain de cet iPhone. Pour les comptes gérés par un ENT, la connexion par QR code est recommandée.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -45,6 +56,14 @@ struct PronoteLoginView: View {
         .interactiveDismissDisabled(isConnecting)
     }
 
+    private var loginMethodPicker: some View {
+        Picker("Méthode de connexion", selection: $loginMethod) {
+            Text("QR code").tag(LoginMethod.qrCode)
+            Text("Identifiants").tag(LoginMethod.credentials)
+        }
+        .pickerStyle(.segmented)
+    }
+
     private var header: some View {
         VStack(spacing: 12) {
             Image(systemName: "graduationcap.fill")
@@ -54,10 +73,46 @@ struct PronoteLoginView: View {
             Text("Connexion à PRONOTE")
                 .font(.title.bold())
 
-            Text("Scanne le QR code généré dans PRONOTE, puis saisis le code à 4 chiffres choisi lors de sa création.")
+            Text(
+                loginMethod == .qrCode
+                    ? "Scanne le QR code généré dans PRONOTE, puis saisis le code à 4 chiffres choisi lors de sa création."
+                    : "Saisis l’adresse du serveur et les identifiants directs de ton compte PRONOTE."
+            )
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+        }
+    }
+
+    private var credentialsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Connexion directe PRONOTE")
+                .font(.headline)
+
+            TextField("Adresse du serveur PRONOTE", text: $serverURL)
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .textFieldStyle(.roundedBorder)
+
+            Picker("Type de compte", selection: $accountKind) {
+                ForEach(PronoteAccountKind.allCases) { kind in
+                    Text(kind.displayName).tag(kind)
+                }
+            }
+            .pickerStyle(.menu)
+
+            TextField("Identifiant PRONOTE", text: $username)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .textFieldStyle(.roundedBorder)
+
+            SecureField("Mot de passe PRONOTE", text: $password)
+                .textFieldStyle(.roundedBorder)
+
+            Text("Ce mode utilise les identifiants directs du compte PRONOTE. Il ne remplace pas la connexion SSO d’un portail ENT.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -145,21 +200,40 @@ struct PronoteLoginView: View {
     }
 
     private var canConnect: Bool {
-        scannedQRCode != nil && pin.count == 4
+        switch loginMethod {
+        case .qrCode:
+            return scannedQRCode != nil && pin.count == 4
+        case .credentials:
+            return !serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !password.isEmpty
+        }
     }
 
     private func connect() async {
-        guard let scannedQRCode, canConnect else { return }
+        guard canConnect else { return }
 
         isConnecting = true
         errorMessage = nil
         defer { isConnecting = false }
 
         do {
-            let result = try await LivePronoteClient.loginWithQRCode(
-                qrText: scannedQRCode,
-                pin: pin
-            )
+            let result: PronoteQRLoginResult
+            switch loginMethod {
+            case .qrCode:
+                guard let scannedQRCode else { return }
+                result = try await LivePronoteClient.loginWithQRCode(
+                    qrText: scannedQRCode,
+                    pin: pin
+                )
+            case .credentials:
+                result = try await LivePronoteClient.loginWithCredentials(
+                    serverURL: serverURL,
+                    username: username,
+                    password: password,
+                    accountKind: accountKind
+                )
+            }
 
             try CredentialsStore(store: dataStore.environmentSecrets).save(result.credentials)
             dataStore.setDataSource(.pronote)
@@ -175,6 +249,11 @@ struct PronoteLoginView: View {
             errorMessage = error.localizedDescription
         }
     }
+}
+
+private enum LoginMethod: Hashable {
+    case qrCode
+    case credentials
 }
 
 private enum PronoteLoginViewError: Error, LocalizedError {

@@ -36,6 +36,7 @@ final class PronoteFunctionParametersClientTests: XCTestCase {
         )
 
         let session = PronoteSessionParameters(
+            rootURL: URL(string: "https://example.com/pronote/")!,
             sessionID: "2052117",
             spaceID: 3,
             skipRequestEncryption: true,
@@ -45,10 +46,10 @@ final class PronoteFunctionParametersClientTests: XCTestCase {
         do {
             _ = try await client.start(
                 session: session,
-                serverURL: "https://example.com/pronote/eleve.html"
+                temporaryIV: Data(repeating: 1, count: 16)
             )
             XCTFail("La réponse volontairement invalide aurait dû provoquer une erreur.")
-        } catch PronoteFunctionParametersError.invalidResponseOrder {
+        } catch PronoteCryptoError.invalidHex {
             XCTAssertTrue(true)
         }
     }
@@ -63,7 +64,8 @@ private final class FunctionParametersFakeTransport: PronoteHTTPTransporting {
     }
 
     func bootstrap(
-        serverURL: String
+        serverURL: String,
+        accountKind: PronoteAccountKind
     ) async throws -> PronoteSessionParameters {
         fatalError("bootstrap non utilisé dans ce test")
     }

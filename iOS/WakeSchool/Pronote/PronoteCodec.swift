@@ -1,5 +1,4 @@
 import Foundation
-import Compression
 
 enum PronoteCodecError: Error, Equatable {
     case invalidJSON
@@ -45,113 +44,70 @@ enum PronoteCodec {
 
     // MARK: - Compression
 
-    /// Compression ZLIB/DEFLATE utilisée par PRONOTE.
+    /// Pawnote compresses the hexadecimal UTF-8 representation with raw DEFLATE.
     static func deflate(_ data: Data) throws -> Data {
         guard !data.isEmpty else {
             return Data()
         }
 
-        let destinationCapacity = max(
-            1024,
-            data.count * 2
-        )
-
-        var destination = Data(
-            count: destinationCapacity
-        )
-
-        let encodedSize: Int = data.withUnsafeBytes { sourceBuffer in
-            destination.withUnsafeMutableBytes { destinationBuffer in
-
-                guard let sourcePointer =
-                        sourceBuffer.bindMemory(
-                            to: UInt8.self
-                        ).baseAddress,
-
-                      let destinationPointer =
-                        destinationBuffer.bindMemory(
-                            to: UInt8.self
-                        ).baseAddress
-                else {
-                    return 0
+        var capacity = max(1024, data.count * 2)
+        while capacity <= 64 * 1024 * 1024 {
+            var destination = Data(count: capacity)
+            var encodedSize = Int32(capacity)
+            let status = data.withUnsafeBytes { source in
+                destination.withUnsafeMutableBytes { target in
+                    pronote_deflate_raw(
+                        source.bindMemory(to: UInt8.self).baseAddress,
+                        Int32(data.count),
+                        target.bindMemory(to: UInt8.self).baseAddress,
+                        &encodedSize
+                    )
                 }
-
-                return compression_encode_buffer(
-                    destinationPointer,
-                    destinationCapacity,
-                    sourcePointer,
-                    data.count,
-                    nil,
-                    COMPRESSION_ZLIB
-                )
             }
+            if status == 1 {
+                destination.count = Int(encodedSize)
+                return destination
+            }
+            guard status == 0 else {
+                throw PronoteCodecError.compressionFailed
+            }
+            capacity *= 2
         }
-
-        guard encodedSize > 0 else {
-            throw PronoteCodecError.compressionFailed
-        }
-
-        destination.count = encodedSize
-        return destination
+        throw PronoteCodecError.compressionFailed
     }
 
-    /// Décompression ZLIB/DEFLATE utilisée par PRONOTE.
-    ///
-    /// La taille du résultat n'étant pas connue à l'avance,
-    /// on agrandit progressivement le buffer.
+    /// Inflates Pawnote's raw DEFLATE stream containing hexadecimal JSON.
     static func inflate(_ data: Data) throws -> Data {
         guard !data.isEmpty else {
             return Data()
         }
 
-        var destinationCapacity = max(
-            4096,
-            data.count * 4
-        )
-
-        let maximumCapacity = 64 * 1024 * 1024
-
-        while destinationCapacity <= maximumCapacity {
-
-            var destination = Data(
-                count: destinationCapacity
-            )
-
-            let decodedSize: Int = data.withUnsafeBytes { sourceBuffer in
-                destination.withUnsafeMutableBytes { destinationBuffer in
-
-                    guard let sourcePointer =
-                            sourceBuffer.bindMemory(
-                                to: UInt8.self
-                            ).baseAddress,
-
-                          let destinationPointer =
-                            destinationBuffer.bindMemory(
-                                to: UInt8.self
-                            ).baseAddress
-                    else {
-                        return 0
-                    }
-
-                    return compression_decode_buffer(
-                        destinationPointer,
-                        destinationCapacity,
-                        sourcePointer,
-                        data.count,
-                        nil,
-                        COMPRESSION_ZLIB
+        var capacity = max(4096, data.count * 4)
+        while capacity <= 64 * 1024 * 1024 {
+            var destination = Data(count: capacity)
+            var decodedSize = Int32(capacity)
+            let status = data.withUnsafeBytes { source in
+                destination.withUnsafeMutableBytes { target in
+                    pronote_inflate_raw(
+                        source.bindMemory(to: UInt8.self).baseAddress,
+                        Int32(data.count),
+                        target.bindMemory(to: UInt8.self).baseAddress,
+                        &decodedSize
                     )
                 }
             }
-
-            if decodedSize > 0 {
-                destination.count = decodedSize
-                return destination
+            if status == 1 {
+                destination.count = Int(decodedSize)
+                guard let hexString = String(data: destination, encoding: .ascii) else {
+                    throw PronoteCodecError.invalidHex
+                }
+                return try data(fromHex: hexString)
             }
-
-            destinationCapacity *= 2
+            guard status == 0 else {
+                throw PronoteCodecError.decompressionFailed
+            }
+            capacity *= 2
         }
-
         throw PronoteCodecError.decompressionFailed
     }
 
@@ -236,6 +192,7 @@ enum PronoteCodec {
         var payload = try jsonData(object)
 
         if compressed {
+            payload = Data(hex(payload).utf8)
             payload = try deflate(payload)
         }
 

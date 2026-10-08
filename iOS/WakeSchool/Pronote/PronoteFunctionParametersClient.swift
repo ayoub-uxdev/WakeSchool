@@ -41,7 +41,6 @@ struct PronoteFunctionParametersClient {
 
     func start(
         session: PronoteSessionParameters,
-        serverURL: String,
         clientIdentifier: String? = nil,
         temporaryIV: Data
     ) async throws -> PronoteInitialSession {
@@ -57,47 +56,68 @@ struct PronoteFunctionParametersClient {
 
         let initialOrder = try makeInitialOrder()
 
-        guard let baseURL = URL(string: normalizedRoot(serverURL)) else {
-            throw PronoteTransportError.invalidServerURL
+        let uuidData: Data
+        if session.rsaFromConstants && !session.usesHTTPRSA {
+            uuidData = temporaryIV
+        } else {
+            uuidData = try PronoteCrypto.rsaEncryptPKCS1v15(
+                temporaryIV,
+                modulus: session.rsaModulus,
+                exponent: session.rsaExponent
+            )
         }
 
-        let endpoint = baseURL
-            .appendingPathComponent("appelfonction")
-            .appendingPathComponent(String(session.spaceID))
-            .appendingPathComponent(session.sessionID)
-            .appendingPathComponent(initialOrder)
-
-        let uuid = temporaryIV.base64EncodedString()
-
         var data: [String: Any] = [
-            "Uuid": uuid
+            "Uuid": uuidData.base64EncodedString()
         ]
-        data["identifiantNav"] = clientIdentifier as Any
+        if let clientIdentifier {
+            data["identifiantNav"] = clientIdentifier
+        } else {
+            data["identifiantNav"] = NSNull()
+        }
 
-        let body: [String: Any] = [
-            "nom": "FonctionParametres",
+        let payload: [String: Any] = [
+            "data": data,
+            "donnees": data
+        ]
+        let sessionIV = PronoteCrypto.md5(temporaryIV)
+        let encodedPayload = try PronoteCodec.encodeDataSec(
+            payload,
+            compressed: session.requestsAreCompressed,
+            encrypted: session.requestsAreEncrypted,
+            key: PronoteCrypto.md5(Data()),
+            iv: sessionIV
+        )
+
+        let properties = PronoteAPIProperties.forVersion(session.version)
+        var body: [String: Any] = [
             "session": Int(session.sessionID) ?? 0,
-            "no": initialOrder,
-            "id": "FonctionParametres",
-            "dataSec": [
-                "data": data
-            ]
+            properties.orderNumber: initialOrder,
+            properties.requestID: "FonctionParametres",
+            properties.secureData: Self.dataSecJSON(encodedPayload)
         ]
-
+        if !session.version.lexicographicallyPrecedes([2025, 1, 3]) {
+            body["nom"] = "FonctionParametres"
+        }
         let bodyData = try JSONSerialization.data(withJSONObject: body, options: [])
+        let endpoint = PronoteHTTPTransport.appelfonctionURL(
+            rootURL: session.rootURL,
+            spaceID: session.spaceID,
+            sessionID: session.sessionID,
+            order: initialOrder
+        )
         let responseData = try await transport.post(
             to: endpoint,
             body: bodyData,
             additionalHeaders: [:]
         )
 
-        let sessionIV = PronoteCrypto.md5(temporaryIV)
-
         guard let response = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any] else {
             throw PronoteFunctionParametersError.invalidResponse
         }
 
-        guard let responseNumber = response["no"] as? String
+        guard let responseNumber = response[properties.orderNumber] as? String
+                ?? response["no"] as? String
                 ?? response["numeroOrdre"] as? String else {
             throw PronoteFunctionParametersError.invalidResponse
         }
@@ -115,7 +135,9 @@ struct PronoteFunctionParametersClient {
             throw PronoteFunctionParametersError.unexpectedResponseNumber
         }
 
-        guard response["dataSec"] != nil else {
+        guard response[properties.secureData] != nil
+            || response["dataSec"] != nil
+            || response["donneesSec"] != nil else {
             throw PronoteFunctionParametersError.missingData
         }
 
@@ -141,18 +163,12 @@ struct PronoteFunctionParametersClient {
         return PronoteCodec.hex(encrypted)
     }
 
-    private func normalizedRoot(_ serverURL: String) -> String {
-        var value = serverURL
-        while value.hasSuffix("/") {
-            value.removeLast()
+    private static func dataSecJSON(_ value: PronoteDataSec) -> Any {
+        switch value {
+        case .jsonObject(let object):
+            return object
+        case .encodedHex(let hex):
+            return hex
         }
-
-        if value.hasSuffix("/mobile.eleve.html") {
-            value.removeLast("/mobile.eleve.html".count)
-        } else if value.hasSuffix("/eleve.html") {
-            value.removeLast("/eleve.html".count)
-        }
-
-        return value
     }
 }

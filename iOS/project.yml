@@ -24,6 +24,8 @@ targets:
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: NO
+        SWIFT_OBJC_BRIDGING_HEADER: WakeSchool/Pronote/PronoteZlib.h
+        OTHER_LDFLAGS: "$(inherited) -lz"
     scheme:
       testTargets:
         - WakeSchoolTests

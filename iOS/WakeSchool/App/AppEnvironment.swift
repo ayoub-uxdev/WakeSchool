@@ -79,7 +79,8 @@ final class AppEnvironment {
                 mobileToken: credentials.usesMobileToken
                     ? credentials.password
                     : nil,
-                qrLogin: credentials.usesMobileToken
+                requestFirstMobileAuthentication: false,
+                qrLogin: false
             )
 
             return PronoteSchoolDataProvider(
