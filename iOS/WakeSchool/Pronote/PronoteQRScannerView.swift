@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 import VisionKit
 
@@ -6,27 +7,27 @@ struct PronoteQRScannerView: View {
 
     let onCodeScanned: (String) -> Void
 
+    @State private var isCheckingCameraPermission = true
+    @State private var cameraPermissionGranted = false
     @State private var scannerUnavailable = false
     @State private var scannerError: String?
-    @State private var didScan = false
 
     var body: some View {
         NavigationStack {
             Group {
-                if DataScannerViewController.isSupported &&
+                if isCheckingCameraPermission {
+                    ProgressView("Préparation de la caméra...")
+                } else if cameraPermissionGranted &&
+                    DataScannerViewController.isSupported &&
                     DataScannerViewController.isAvailable {
-
                     DataScannerRepresentable(
-                        didScan: $didScan,
                         onCodeScanned: onCodeScanned,
                         onError: { message in
                             scannerError = message
+                            scannerUnavailable = true
                         }
                     )
-                    .ignoresSafeArea(
-                        edges: .bottom
-                    )
-
+                    .ignoresSafeArea(edges: .bottom)
                 } else {
                     unavailableView
                 }
@@ -34,9 +35,7 @@ struct PronoteQRScannerView: View {
             .navigationTitle("Scanner le QR code")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(
-                    placement: .topBarLeading
-                ) {
+                ToolbarItem(placement: .topBarLeading) {
                     Button("Fermer") {
                         dismiss()
                     }
@@ -46,26 +45,45 @@ struct PronoteQRScannerView: View {
                 "Scanner indisponible",
                 isPresented: $scannerUnavailable
             ) {
-                Button(
-                    "OK",
-                    role: .cancel
-                ) {
+                Button("OK", role: .cancel) {
                     dismiss()
                 }
             } message: {
                 Text(
                     scannerError
-                    ?? "La caméra de cet iPhone ne peut pas être utilisée pour scanner le QR code."
+                        ?? "Autorise l’accès à la caméra dans Réglages, puis réessaie."
                 )
             }
         }
-        .onAppear {
+        .task {
+            await prepareScanner()
+        }
+    }
 
-            if !DataScannerViewController.isSupported ||
-                !DataScannerViewController.isAvailable {
+    @MainActor
+    private func prepareScanner() async {
+        let authorizationStatus =
+            AVCaptureDevice.authorizationStatus(for: .video)
 
-                scannerUnavailable = true
-            }
+        switch authorizationStatus {
+        case .authorized:
+            cameraPermissionGranted = true
+        case .notDetermined:
+            cameraPermissionGranted =
+                await AVCaptureDevice.requestAccess(for: .video)
+        case .denied, .restricted:
+            cameraPermissionGranted = false
+        @unknown default:
+            cameraPermissionGranted = false
+        }
+
+        isCheckingCameraPermission = false
+
+        if !cameraPermissionGranted {
+            scannerUnavailable = true
+        } else if !DataScannerViewController.isSupported ||
+            !DataScannerViewController.isAvailable {
+            scannerUnavailable = true
         }
     }
 
@@ -86,8 +104,6 @@ struct PronoteQRScannerView: View {
 private struct DataScannerRepresentable:
     UIViewControllerRepresentable {
 
-    @Binding var didScan: Bool
-
     let onCodeScanned: (String) -> Void
     let onError: (String) -> Void
 
@@ -101,13 +117,10 @@ private struct DataScannerRepresentable:
     func makeUIViewController(
         context: Context
     ) -> DataScannerViewController {
-
         let controller =
-            DataScannerViewController(
+            LifecycleDataScannerViewController(
                 recognizedDataTypes: [
-                    .barcode(
-                        symbologies: [.qr]
-                    )
+                    .barcode(symbologies: [.qr])
                 ],
                 qualityLevel: .balanced,
                 recognizesMultipleItems: false,
@@ -117,8 +130,10 @@ private struct DataScannerRepresentable:
                 isHighlightingEnabled: true
             )
 
-        controller.delegate =
-            context.coordinator
+        controller.delegate = context.coordinator
+        controller.onDidAppear = { [weak coordinator = context.coordinator] scanner in
+            coordinator?.startScanning(scanner)
+        }
 
         return controller
     }
@@ -126,29 +141,26 @@ private struct DataScannerRepresentable:
     func updateUIViewController(
         _ uiViewController: DataScannerViewController,
         context: Context
-    ) {
-        guard !didScan else {
-            return
-        }
-
-        guard !uiViewController.isScanning else {
-            return
-        }
-
-        do {
-            try uiViewController.startScanning()
-        } catch {
-            onError(
-                error.localizedDescription
-            )
-        }
-    }
+    ) {}
 
     static func dismantleUIViewController(
         _ uiViewController: DataScannerViewController,
         coordinator: Coordinator
     ) {
-        uiViewController.stopScanning()
+        if uiViewController.isScanning {
+            uiViewController.stopScanning()
+        }
+    }
+
+    private final class LifecycleDataScannerViewController:
+        DataScannerViewController {
+
+        var onDidAppear: ((DataScannerViewController) -> Void)?
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            onDidAppear?(self)
+        }
     }
 
     final class Coordinator:
@@ -159,6 +171,7 @@ private struct DataScannerRepresentable:
         let onError: (String) -> Void
 
         private var hasDeliveredCode = false
+        private var isStartingOrScanning = false
 
         init(
             onCodeScanned: @escaping (String) -> Void,
@@ -168,37 +181,54 @@ private struct DataScannerRepresentable:
             self.onError = onError
         }
 
+        func startScanning(_ scanner: DataScannerViewController) {
+            guard !isStartingOrScanning, !hasDeliveredCode else {
+                return
+            }
+
+            guard DataScannerViewController.isSupported,
+                DataScannerViewController.isAvailable
+            else {
+                onError(
+                    "La caméra de cet iPhone ne peut pas être utilisée pour scanner le QR code."
+                )
+                return
+            }
+
+            isStartingOrScanning = true
+
+            do {
+                try scanner.startScanning()
+            } catch {
+                isStartingOrScanning = false
+                onError(error.localizedDescription)
+            }
+        }
+
         func dataScanner(
             _ dataScanner: DataScannerViewController,
             didAdd addedItems: [RecognizedItem],
             allItems: [RecognizedItem]
         ) {
-
             guard !hasDeliveredCode else {
                 return
             }
 
             for item in addedItems {
-
-                guard case .barcode(let barcode) = item else {
-                    continue
-                }
-
-                guard let payload =
-                        barcode.payloadStringValue,
-                      !payload.isEmpty
+                guard case .barcode(let barcode) = item,
+                    let payload = barcode.payloadStringValue,
+                    !payload.isEmpty
                 else {
                     continue
                 }
 
                 hasDeliveredCode = true
 
-                dataScanner.stopScanning()
+                if dataScanner.isScanning {
+                    dataScanner.stopScanning()
+                }
 
-                onCodeScanned(
-                    payload
-                )
-
+                onCodeScanned(payload)
                 return
             }
         }
@@ -208,9 +238,7 @@ private struct DataScannerRepresentable:
             becameUnavailableWithError error:
                 DataScannerViewController.ScanningUnavailable
         ) {
-            onError(
-                error.localizedDescription
-            )
+            onError(error.localizedDescription)
         }
     }
 }

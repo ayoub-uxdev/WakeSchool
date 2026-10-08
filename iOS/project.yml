@@ -16,6 +16,7 @@ targets:
       properties:
         CFBundleDisplayName: WakeSchool
         UILaunchScreen: {}
+        NSCameraUsageDescription: "WakeSchool utilise la caméra pour scanner le QR code de connexion PRONOTE."
         NSAlarmKitUsageDescription: "WakeSchool programme ton réveil en fonction de ton emploi du temps."
     settings:
       base:
