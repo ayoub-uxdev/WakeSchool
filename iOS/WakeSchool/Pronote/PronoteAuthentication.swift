@@ -189,7 +189,7 @@ struct PronoteAuthenticator {
             requestsAreCompressed: initial.requestsAreCompressed,
             userName: userName,
             mobileToken: token,
-            initialParameters: initial.parameters
+            initialParameters: nil
         )
     }
 
@@ -210,7 +210,7 @@ struct PronoteAuthenticator {
         )
         let order = PronoteCodec.hex(encryptedOrder)
 
-        let dataSec = try PronoteCodec.encodeRequestDataSec(
+        let dataSec = try PronoteCodec.encodeDataSec(
             data,
             compressed: compressed,
             encrypted: encrypted,
@@ -253,7 +253,7 @@ struct PronoteAuthenticator {
         }
 
         if let responseDataSec = response["dataSec"] as? String {
-            response["dataSec"] = try PronoteCodec.decodeResponseDataSec(
+            response["dataSec"] = try PronoteCodec.decodeDataSec(
                 responseDataSec,
                 compressed: compressed,
                 encrypted: encrypted,

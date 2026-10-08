@@ -83,7 +83,7 @@ struct PronoteLoginView: View {
                 Text(scannedQRCode == nil ? "Aucun QR code scanné" : "QR code scanné")
             }
             .font(.subheadline)
-            .foregroundStyle(scannedQRCode == nil ? .secondary : .green)
+            .foregroundStyle(scannedQRCode == nil ? Color.secondary : Color.green)
         }
     }
 
