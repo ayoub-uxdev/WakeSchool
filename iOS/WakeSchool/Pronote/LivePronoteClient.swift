@@ -22,16 +22,76 @@ final class LivePronoteClient: PronoteClient {
         self.transport = transport
     }
 
+    // MARK: - QR Login
+
+    /// Décode le QR PRONOTE, récupère les identifiants mobiles
+    /// et vérifie immédiatement que la connexion PRONOTE fonctionne.
+    static func loginWithQRCode(
+        qrText: String,
+        pin: String
+    ) async throws -> PronoteQRLoginResult {
+
+        let qr = try PronoteQRLogin.decodeQRCode(
+            qrText,
+            pin: pin
+        )
+
+        let decoded = try PronoteQRLogin.decryptCredentials(
+            from: qr,
+            pin: pin
+        )
+
+        let mobileUUID = try PronoteMobileIdentity.sharedUUID()
+
+        let credentials = PronoteCredentials(
+            serverURL: decoded.serverURL,
+            username: decoded.username,
+            password: decoded.password,
+            usesMobileToken: true,
+            mobileUUID: mobileUUID
+        )
+
+        let options = PronoteLoginOptions(
+            useENT: false,
+            mobileUUID: mobileUUID,
+            clientIdentifier: mobileUUID,
+            mobileToken: decoded.password,
+            qrLogin: true
+        )
+
+        let client = LivePronoteClient(
+            credentials: credentials,
+            options: options
+        )
+
+        let profile = try await client.profile()
+
+        return PronoteQRLoginResult(
+            credentials: credentials,
+            displayName: profile.displayName
+        )
+    }
+
     // MARK: - Timetable
 
     func getTimetable() async throws -> [TimetableEntry] {
+
         let client = try await connectedClient()
-        let resource = try await loadResource(client)
+
+        let resource = try await loadResource(
+            client
+        )
 
         let calendar = Calendar.current
-        let currentYear = calendar.component(.year, from: Date())
 
-        let start = schoolYearStart
+        let currentYear =
+            calendar.component(
+                .year,
+                from: Date()
+            )
+
+        let start =
+            schoolYearStart
             ?? calendar.date(
                 from: DateComponents(
                     year: currentYear,
@@ -40,7 +100,10 @@ final class LivePronoteClient: PronoteClient {
                 )
             )!
 
-        let today = calendar.startOfDay(for: Date())
+        let today =
+            calendar.startOfDay(
+                for: Date()
+            )
 
         let daysSinceStart =
             calendar.dateComponents(
@@ -49,23 +112,27 @@ final class LivePronoteClient: PronoteClient {
                 to: today
             ).day ?? 0
 
-        let currentWeek = max(
-            1,
-            1 + max(0, daysSinceStart) / 7
-        )
+        let currentWeek =
+            max(
+                1,
+                1 + max(0, daysSinceStart) / 7
+            )
 
         var entries: [TimetableEntry] = []
 
         for week in currentWeek...(currentWeek + 2) {
-            let response = try await client.timetable(
-                weekNumber: week,
-                resource: resource
-            )
+
+            let response =
+                try await client.timetable(
+                    weekNumber: week,
+                    resource: resource
+                )
 
             entries.append(
-                contentsOf: PronoteMapper.timetable(
-                    from: response
-                )
+                contentsOf:
+                    PronoteMapper.timetable(
+                        from: response
+                    )
             )
         }
 
@@ -75,26 +142,35 @@ final class LivePronoteClient: PronoteClient {
     // MARK: - Homework
 
     func getHomework() async throws -> [Homework] {
-        let client = try await connectedClient()
-        let resource = try await loadResource(client)
+
+        let client =
+            try await connectedClient()
+
+        let resource =
+            try await loadResource(
+                client
+            )
 
         let calendar = Calendar.current
 
-        let start = calendar.startOfDay(
-            for: Date()
-        )
+        let start =
+            calendar.startOfDay(
+                for: Date()
+            )
 
-        let end = calendar.date(
-            byAdding: .day,
-            value: 45,
-            to: start
-        ) ?? start
+        let end =
+            calendar.date(
+                byAdding: .day,
+                value: 45,
+                to: start
+            ) ?? start
 
-        let response = try await client.homework(
-            from: start,
-            to: end,
-            resource: resource
-        )
+        let response =
+            try await client.homework(
+                from: start,
+                to: end,
+                resource: resource
+            )
 
         return PronoteMapper.homework(
             from: response
@@ -104,9 +180,13 @@ final class LivePronoteClient: PronoteClient {
     // MARK: - Grades
 
     func getGrades() async throws -> [Grade] {
-        let client = try await connectedClient()
 
-        _ = try await loadResource(client)
+        let client =
+            try await connectedClient()
+
+        _ = try await loadResource(
+            client
+        )
 
         guard !periods.isEmpty else {
             return []
@@ -115,14 +195,17 @@ final class LivePronoteClient: PronoteClient {
         var grades: [Grade] = []
 
         for period in periods {
-            let response = try await client.grades(
-                period: period
-            )
+
+            let response =
+                try await client.grades(
+                    period: period
+                )
 
             grades.append(
-                contentsOf: PronoteMapper.grades(
-                    from: response
-                )
+                contentsOf:
+                    PronoteMapper.grades(
+                        from: response
+                    )
             )
         }
 
@@ -132,88 +215,108 @@ final class LivePronoteClient: PronoteClient {
     // MARK: - Profile
 
     func profile() async throws -> PronoteProfile {
-        let client = try await connectedClient()
 
-        let parameters = try await loadUserParameters(
-            client
-        )
+        let client =
+            try await connectedClient()
+
+        let parameters =
+            try await loadUserParameters(
+                client
+            )
 
         return PronoteMapper.profile(
             from: parameters
         )
     }
 
-    // MARK: - Mobile token
+    // MARK: - Mobile Token
 
     func refreshedMobileToken() async throws -> String? {
-        let client = try await connectedClient()
+
+        let client =
+            try await connectedClient()
+
         return client.mobileToken
     }
 
     // MARK: - Connection
 
-    private func connectedClient() async throws -> PronoteSessionClient {
+    private func connectedClient()
+        async throws -> PronoteSessionClient {
+
         if let sessionClient {
             return sessionClient
         }
 
-        let sessionParameters = try await transport.bootstrap(
-            serverURL: credentials.serverURL
-        )
-
-        let functionClient = PronoteFunctionParametersClient(
-            transport: transport
-        )
-
-        var temporaryIV = Data(count: 16)
-
-        let randomStatus = temporaryIV.withUnsafeMutableBytes { buffer in
-            SecRandomCopyBytes(
-                kSecRandomDefault,
-                buffer.count,
-                buffer.baseAddress!
+        let sessionParameters =
+            try await transport.bootstrap(
+                serverURL: credentials.serverURL
             )
-        }
+
+        let functionClient =
+            PronoteFunctionParametersClient(
+                transport: transport
+            )
+
+        var temporaryIV =
+            Data(
+                count: 16
+            )
+
+        let randomStatus =
+            temporaryIV.withUnsafeMutableBytes { buffer in
+
+                SecRandomCopyBytes(
+                    kSecRandomDefault,
+                    buffer.count,
+                    buffer.baseAddress!
+                )
+            }
 
         guard randomStatus == errSecSuccess else {
             throw PronoteLiveError.randomGenerationFailed
         }
 
-        let initial = try await functionClient.start(
-            session: sessionParameters,
-            serverURL: credentials.serverURL,
-            clientIdentifier: options.clientIdentifier,
-            temporaryIV: temporaryIV
-        )
+        let initial =
+            try await functionClient.start(
+                session: sessionParameters,
+                serverURL: credentials.serverURL,
+                clientIdentifier: options.clientIdentifier,
+                temporaryIV: temporaryIV
+            )
 
-        let authenticator = PronoteAuthenticator(
-            transport: transport
-        )
+        let authenticator =
+            PronoteAuthenticator(
+                transport: transport
+            )
 
-        let authentication = try await authenticator.authenticate(
-            credentials: credentials,
-            session: sessionParameters,
-            initial: initial,
-            options: options
-        )
+        let authentication =
+            try await authenticator.authenticate(
+                credentials: credentials,
+                session: sessionParameters,
+                initial: initial,
+                options: options
+            )
 
-        let client = PronoteSessionClient(
-            transport: transport,
-            session: authentication
-        )
+        let client =
+            PronoteSessionClient(
+                transport: transport,
+                session: authentication
+            )
 
         sessionClient = client
 
         return client
     }
 
-    // MARK: - User parameters
+    // MARK: - User Parameters
 
     private func loadUserParameters(
         _ client: PronoteSessionClient
     ) async throws -> Any {
 
-        let response = try await client.userParameters()
+        let response =
+            try await client.userParameters()
 
         resource =
             PronoteMapper.resource(
@@ -226,6 +329,7 @@ final class LivePronoteClient: PronoteClient {
             )
 
         if schoolYearStart == nil {
+
             schoolYearStart =
                 PronoteMapper.schoolYearStart(
                     from: response

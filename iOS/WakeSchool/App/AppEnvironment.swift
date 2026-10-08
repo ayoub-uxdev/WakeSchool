@@ -33,7 +33,10 @@ final class AppEnvironment {
             preferences: preferences,
             secrets: secrets,
             repository: SwiftDataSchoolRepository(container: container),
-            provider: makeProvider(for: preferences.dataSource, secrets: secrets)
+            provider: makeProvider(
+                for: preferences.dataSource,
+                secrets: secrets
+            )
         )
     }
 
@@ -54,7 +57,9 @@ final class AppEnvironment {
         for source: DataSourceKind,
         secrets: SecretStore? = nil
     ) -> SchoolDataProvider {
+
         switch source {
+
         case .demo:
             return DemoSchoolDataProvider()
 
@@ -62,13 +67,25 @@ final class AppEnvironment {
             guard let secrets,
                   let credentials = try? CredentialsStore(store: secrets).load()
             else {
-                return PronoteSchoolDataProvider(client: UnavailablePronoteClient())
+                return PronoteSchoolDataProvider(
+                    client: UnavailablePronoteClient()
+                )
             }
+
+            let options = PronoteLoginOptions(
+                useENT: false,
+                mobileUUID: credentials.mobileUUID,
+                clientIdentifier: credentials.mobileUUID,
+                mobileToken: credentials.usesMobileToken
+                    ? credentials.password
+                    : nil,
+                qrLogin: credentials.usesMobileToken
+            )
 
             return PronoteSchoolDataProvider(
                 client: LivePronoteClient(
                     credentials: credentials,
-                    secretStore: secrets
+                    options: options
                 )
             )
         }
