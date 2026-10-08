@@ -116,50 +116,84 @@ private struct DataScannerRepresentable:
 
     func makeUIViewController(
         context: Context
-    ) -> DataScannerViewController {
-        let controller =
-            LifecycleDataScannerViewController(
-                recognizedDataTypes: [
-                    .barcode(symbologies: [.qr])
-                ],
-                qualityLevel: .balanced,
-                recognizesMultipleItems: false,
-                isHighFrameRateTrackingEnabled: true,
-                isPinchToZoomEnabled: true,
-                isGuidanceEnabled: true,
-                isHighlightingEnabled: true
-            )
+    ) -> ScannerContainerViewController {
+        let scanner = DataScannerViewController(
+            recognizedDataTypes: [
+                .barcode(symbologies: [.qr])
+            ],
+            qualityLevel: .balanced,
+            recognizesMultipleItems: false,
+            isHighFrameRateTrackingEnabled: true,
+            isPinchToZoomEnabled: true,
+            isGuidanceEnabled: true,
+            isHighlightingEnabled: true
+        )
 
-        controller.delegate = context.coordinator
-        controller.onDidAppear = { [weak coordinator = context.coordinator] scanner in
+        scanner.delegate = context.coordinator
+
+        return ScannerContainerViewController(scanner: scanner) {
+            [weak coordinator = context.coordinator] scanner in
             coordinator?.startScanning(scanner)
         }
-
-        return controller
     }
 
     func updateUIViewController(
-        _ uiViewController: DataScannerViewController,
+        _ uiViewController: ScannerContainerViewController,
         context: Context
     ) {}
 
     static func dismantleUIViewController(
-        _ uiViewController: DataScannerViewController,
+        _ uiViewController: ScannerContainerViewController,
         coordinator: Coordinator
     ) {
-        if uiViewController.isScanning {
-            uiViewController.stopScanning()
+        if uiViewController.scanner.isScanning {
+            uiViewController.scanner.stopScanning()
         }
     }
 
-    private final class LifecycleDataScannerViewController:
-        DataScannerViewController {
+    final class ScannerContainerViewController: UIViewController {
+        let scanner: DataScannerViewController
+        private let onDidAppear: (DataScannerViewController) -> Void
 
-        var onDidAppear: ((DataScannerViewController) -> Void)?
+        init(
+            scanner: DataScannerViewController,
+            onDidAppear: @escaping (DataScannerViewController) -> Void
+        ) {
+            self.scanner = scanner
+            self.onDidAppear = onDidAppear
+            super.init(nibName: nil, bundle: nil)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        override func viewDidLoad() {
+            super.viewDidLoad()
+            addChild(scanner)
+            view.addSubview(scanner.view)
+            scanner.view.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                scanner.view.leadingAnchor.constraint(
+                    equalTo: view.leadingAnchor
+                ),
+                scanner.view.trailingAnchor.constraint(
+                    equalTo: view.trailingAnchor
+                ),
+                scanner.view.topAnchor.constraint(
+                    equalTo: view.topAnchor
+                ),
+                scanner.view.bottomAnchor.constraint(
+                    equalTo: view.bottomAnchor
+                )
+            ])
+            scanner.didMove(toParent: self)
+        }
 
         override func viewDidAppear(_ animated: Bool) {
             super.viewDidAppear(animated)
-            onDidAppear?(self)
+            onDidAppear(scanner)
         }
     }
 
