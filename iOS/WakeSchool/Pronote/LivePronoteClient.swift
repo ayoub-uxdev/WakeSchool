@@ -1,4 +1,3 @@
-```swift
 import Foundation
 import Security
 
@@ -40,12 +39,11 @@ final class LivePronoteClient: PronoteClient {
 
         let today = calendar.startOfDay(for: Date())
 
-        let daysSinceStart =
-            calendar.dateComponents(
-                [.day],
-                from: start,
-                to: today
-            ).day ?? 0
+        let daysSinceStart = calendar.dateComponents(
+            [.day],
+            from: start,
+            to: today
+        ).day ?? 0
 
         let currentWeek = max(
             1,
@@ -75,9 +73,7 @@ final class LivePronoteClient: PronoteClient {
         let resource = try await loadResource(client)
 
         let calendar = Calendar.current
-        let start = calendar.startOfDay(
-            for: Date()
-        )
+        let start = calendar.startOfDay(for: Date())
 
         let end = calendar.date(
             byAdding: .day,
@@ -125,9 +121,7 @@ final class LivePronoteClient: PronoteClient {
     func profile() async throws -> PronoteProfile {
         let client = try await connectedClient()
 
-        let parameters = try await loadUserParameters(
-            client
-        )
+        let parameters = try await loadUserParameters(client)
 
         return PronoteMapper.profile(
             from: parameters
@@ -199,21 +193,18 @@ final class LivePronoteClient: PronoteClient {
     ) async throws -> Any {
         let response = try await client.userParameters()
 
-        resource =
-            PronoteMapper.resource(
-                from: response
-            ) ?? resource
+        resource = PronoteMapper.resource(
+            from: response
+        ) ?? resource
 
-        periods =
-            PronoteMapper.periods(
-                from: response
-            )
+        periods = PronoteMapper.periods(
+            from: response
+        )
 
         if schoolYearStart == nil {
-            schoolYearStart =
-                PronoteMapper.schoolYearStart(
-                    from: response
-                )
+            schoolYearStart = PronoteMapper.schoolYearStart(
+                from: response
+            )
         }
 
         return response
@@ -226,9 +217,7 @@ final class LivePronoteClient: PronoteClient {
             return resource
         }
 
-        _ = try await loadUserParameters(
-            client
-        )
+        _ = try await loadUserParameters(client)
 
         guard let resource else {
             throw PronoteLiveError.missingResource
@@ -242,8 +231,8 @@ final class LivePronoteClient: PronoteClient {
     ) -> [TimetableEntry] {
         var map: [UUID: TimetableEntry] = [:]
 
-        entries.forEach {
-            map[$0.id] = $0
+        entries.forEach { entry in
+            map[entry.id] = entry
         }
 
         return map.values.sorted {
@@ -256,8 +245,8 @@ final class LivePronoteClient: PronoteClient {
     ) -> [Grade] {
         var map: [UUID: Grade] = [:]
 
-        grades.forEach {
-            map[$0.id] = $0
+        grades.forEach { grade in
+            map[grade.id] = grade
         }
 
         return map.values.sorted {
@@ -280,4 +269,3 @@ enum PronoteLiveError: Error, LocalizedError, Equatable {
         }
     }
 }
-```
