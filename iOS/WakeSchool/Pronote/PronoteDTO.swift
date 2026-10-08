@@ -2,15 +2,6 @@ import Foundation
 
 /// Réponses PRONOTE restent volontairement non-Codable : la structure varie selon
 /// la version du serveur. Le DTO expose uniquement les primitives dont le mapper a besoin.
-enum PronoteJSON {
-    static func dictionary(_ value: Any) -> [String: Any]? {
-        if let dictionary = value as? [String: Any] { return dictionary }
-        if let response = value as? [String: Any], let dataSec = response["dataSec"] as? [String: Any] {
-            return dictionary(dataSec["data"] ?? dataSec["donnees"] ?? dataSec)
-        }
-        return nil
-    }
-
     static func unwrap(_ value: Any) -> Any {
         guard let dictionary = value as? [String: Any] else { return value }
         if let dataSec = dictionary["dataSec"] { return unwrap(dataSec) }
