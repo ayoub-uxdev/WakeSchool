@@ -1,38 +1,53 @@
 import SwiftUI
 
-enum AppTab: Hashable {
-    case home
-    case timetable
-    case homework
-    case grades
-    case alarm
-}
-
 struct RootView: View {
-    @EnvironmentObject private var store: SchoolDataStore
-    @State private var tab: AppTab = .home
+    @EnvironmentObject private var dataStore: SchoolDataStore
+
+    @State private var showingPronoteLogin = false
 
     var body: some View {
-        TabView(selection: $tab) {
-            DashboardView(onNavigate: { tab = $0 })
-                .tabItem { Label("Accueil", systemImage: "house.fill") }
-                .tag(AppTab.home)
-            TimetableView()
-                .tabItem { Label("Emploi du temps", systemImage: "calendar") }
-                .tag(AppTab.timetable)
-            HomeworkView()
-                .tabItem { Label("Devoirs", systemImage: "checklist") }
-                .badge(HomeworkService.overdue(store.snapshot.homework, now: Date()).count)
-                .tag(AppTab.homework)
-            GradesView()
-                .tabItem { Label("Notes", systemImage: "chart.bar.fill") }
-                .tag(AppTab.grades)
-            SmartAlarmView()
-                .tabItem { Label("Réveil", systemImage: "alarm.fill") }
-                .tag(AppTab.alarm)
+        Group {
+            mainInterface
         }
-        .tint(WakeTheme.accent)
-        .preferredColorScheme(.dark)
-        .task { await store.start() }
+        .task {
+            await dataStore.start()
+
+            if dataStore.dataSource == .demo {
+                showingPronoteLogin = true
+            }
+        }
+        .sheet(isPresented: $showingPronoteLogin) {
+            PronoteLoginView()
+                .environmentObject(dataStore)
+        }
+    }
+
+    private var mainInterface: some View {
+        TabView {
+            DashboardView()
+                .tabItem {
+                    Label("Accueil", systemImage: "house.fill")
+                }
+
+            TimetableView()
+                .tabItem {
+                    Label("Emploi du temps", systemImage: "calendar")
+                }
+
+            HomeworkView()
+                .tabItem {
+                    Label("Devoirs", systemImage: "book.closed.fill")
+                }
+
+            GradesView()
+                .tabItem {
+                    Label("Notes", systemImage: "chart.bar.fill")
+                }
+
+            SmartAlarmView()
+                .tabItem {
+                    Label("Réveil", systemImage: "alarm.fill")
+                }
+        }
     }
 }

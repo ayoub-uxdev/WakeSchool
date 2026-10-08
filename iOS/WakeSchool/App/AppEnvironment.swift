@@ -1,46 +1,94 @@
 import Foundation
 import SwiftData
 
-/// Point de câblage des couches. Choisit le provider selon les préférences ;
-/// les Views ne changent pas quand on passe de la démo à Pronote.
-/// Pas encore branché sur l'UI (prévu dans le lot suivant).
+/// Point de câblage des différentes couches de l'application.
+///
+/// L'interface utilisateur ne dépend pas directement de PRONOTE.
+/// Le provider peut être remplacé dynamiquement après une connexion.
 @MainActor
 final class AppEnvironment {
     let preferences: PreferencesStore
     let secrets: SecretStore
     let repository: SchoolRepository
-    let sync: SchoolSyncService
 
-    init(preferences: PreferencesStore,
-         secrets: SecretStore,
-         repository: SchoolRepository,
-         provider: SchoolDataProvider) {
+    private(set) var sync: SchoolSyncService
+
+    init(
+        preferences: PreferencesStore,
+        secrets: SecretStore,
+        repository: SchoolRepository,
+        provider: SchoolDataProvider
+    ) {
         self.preferences = preferences
         self.secrets = secrets
         self.repository = repository
-        self.sync = SchoolSyncService(provider: provider, repository: repository, preferences: preferences)
+
+        self.sync = SchoolSyncService(
+            provider: provider,
+            repository: repository,
+            preferences: preferences
+        )
     }
 
     static func live() throws -> AppEnvironment {
         let preferences = PreferencesStore()
         let container = try SwiftDataSchoolRepository.makeContainer()
         let secrets = KeychainSecretStore()
-        return AppEnvironment(preferences: preferences,
-                              secrets: secrets,
-                              repository: SwiftDataSchoolRepository(container: container),
-                              provider: makeProvider(for: preferences.dataSource, secrets: secrets))
+
+        return AppEnvironment(
+            preferences: preferences,
+            secrets: secrets,
+            repository: SwiftDataSchoolRepository(
+                container: container
+            ),
+            provider: makeProvider(
+                for: preferences.dataSource,
+                secrets: secrets
+            )
+        )
     }
 
-    static func makeProvider(for source: DataSourceKind, secrets: SecretStore? = nil) -> SchoolDataProvider {
+    /// Reconstruit le provider lorsque la source de données change.
+    ///
+    /// Exemple :
+    /// Demo → connexion PRONOTE → LivePronoteClient
+    func reloadProvider() {
+        let provider = Self.makeProvider(
+            for: preferences.dataSource,
+            secrets: secrets
+        )
+
+        sync = SchoolSyncService(
+            provider: provider,
+            repository: repository,
+            preferences: preferences
+        )
+    }
+
+    static func makeProvider(
+        for source: DataSourceKind,
+        secrets: SecretStore? = nil
+    ) -> SchoolDataProvider {
         switch source {
         case .demo:
             return DemoSchoolDataProvider()
+
         case .pronote:
             guard let secrets,
-                  let credentials = try? CredentialsStore(store: secrets).load() else {
-                return PronoteSchoolDataProvider(client: UnavailablePronoteClient())
+                  let credentials = try? CredentialsStore(
+                    store: secrets
+                  ).load()
+            else {
+                return PronoteSchoolDataProvider(
+                    client: UnavailablePronoteClient()
+                )
             }
-            return PronoteSchoolDataProvider(client: LivePronoteClient(credentials: credentials))
+
+            return PronoteSchoolDataProvider(
+                client: LivePronoteClient(
+                    credentials: credentials
+                )
+            )
         }
     }
 }
