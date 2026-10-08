@@ -1,16 +1,11 @@
 import Foundation
 import SwiftData
 
-/// Point de câblage des différentes couches de l'application.
-///
-/// L'interface utilisateur ne dépend pas directement de PRONOTE.
-/// Le provider peut être remplacé dynamiquement après une connexion.
 @MainActor
 final class AppEnvironment {
     let preferences: PreferencesStore
     let secrets: SecretStore
     let repository: SchoolRepository
-
     private(set) var sync: SchoolSyncService
 
     init(
@@ -22,7 +17,6 @@ final class AppEnvironment {
         self.preferences = preferences
         self.secrets = secrets
         self.repository = repository
-
         self.sync = SchoolSyncService(
             provider: provider,
             repository: repository,
@@ -38,20 +32,11 @@ final class AppEnvironment {
         return AppEnvironment(
             preferences: preferences,
             secrets: secrets,
-            repository: SwiftDataSchoolRepository(
-                container: container
-            ),
-            provider: makeProvider(
-                for: preferences.dataSource,
-                secrets: secrets
-            )
+            repository: SwiftDataSchoolRepository(container: container),
+            provider: makeProvider(for: preferences.dataSource, secrets: secrets)
         )
     }
 
-    /// Reconstruit le provider lorsque la source de données change.
-    ///
-    /// Exemple :
-    /// Demo → connexion PRONOTE → LivePronoteClient
     func reloadProvider() {
         let provider = Self.makeProvider(
             for: preferences.dataSource,
@@ -75,18 +60,15 @@ final class AppEnvironment {
 
         case .pronote:
             guard let secrets,
-                  let credentials = try? CredentialsStore(
-                    store: secrets
-                  ).load()
+                  let credentials = try? CredentialsStore(store: secrets).load()
             else {
-                return PronoteSchoolDataProvider(
-                    client: UnavailablePronoteClient()
-                )
+                return PronoteSchoolDataProvider(client: UnavailablePronoteClient())
             }
 
             return PronoteSchoolDataProvider(
                 client: LivePronoteClient(
-                    credentials: credentials
+                    credentials: credentials,
+                    secretStore: secrets
                 )
             )
         }

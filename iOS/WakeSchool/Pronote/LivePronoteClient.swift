@@ -1,10 +1,10 @@
 import Foundation
-import Security
 
 final class LivePronoteClient: PronoteClient {
     private let credentials: PronoteCredentials
     private let options: PronoteLoginOptions
     private let transport: PronoteHTTPTransporting
+    private let secretStore: SecretStore?
 
     private var sessionClient: PronoteSessionClient?
     private var resource: [String: Any]?
@@ -13,10 +13,12 @@ final class LivePronoteClient: PronoteClient {
 
     init(credentials: PronoteCredentials,
          options: PronoteLoginOptions = .init(),
-         transport: PronoteHTTPTransporting = PronoteHTTPTransport()) {
+         transport: PronoteHTTPTransport(),
+         secretStore: SecretStore? = nil) {
         self.credentials = credentials
         self.options = options
         self.transport = transport
+        self.secretStore = secretStore
     }
 
     func getTimetable() async throws -> [TimetableEntry] {
@@ -67,33 +69,90 @@ final class LivePronoteClient: PronoteClient {
         return client.mobileToken
     }
 
+    static func loginWithQRCode(qrText: String, pin: String) async throws -> PronoteQRLoginResult {
+        let qr = try PronoteQRLogin.decodeQRCode(qrText, pin: pin)
+        let decoded = try PronoteQRLogin.decryptCredentials(from: qr, pin: pin)
+        let mobileUUID = try PronoteMobileIdentity.sharedUUID()
+
+        let temporaryCredentials = PronoteCredentials(
+            serverURL: decoded.serverURL,
+            username: decoded.username,
+            password: decoded.password,
+            usesMobileToken: false,
+            mobileUUID: mobileUUID
+        )
+
+        let client = LivePronoteClient(
+            credentials: temporaryCredentials,
+            options: PronoteLoginOptions(
+                mobileUUID: mobileUUID,
+                qrLogin: true
+            )
+        )
+
+        let authenticatedClient = try await client.connectedClient()
+        guard let token = authenticatedClient.mobileToken, !token.isEmpty else {
+            throw PronoteQRLoginError.missingMobileToken
+        }
+
+        let storedCredentials = PronoteCredentials(
+            serverURL: decoded.serverURL,
+            username: decoded.username,
+            password: token,
+            usesMobileToken: true,
+            mobileUUID: mobileUUID
+        )
+
+        return PronoteQRLoginResult(
+            credentials: storedCredentials,
+            displayName: authenticatedClient.userName
+        )
+    }
+
     private func connectedClient() async throws -> PronoteSessionClient {
         if let sessionClient { return sessionClient }
 
         let sessionParameters = try await transport.bootstrap(serverURL: credentials.serverURL)
         let functionClient = PronoteFunctionParametersClient(transport: transport)
-        var temporaryIV = Data(count: 16)
-        let randomStatus = temporaryIV.withUnsafeMutableBytes { buffer in
-            SecRandomCopyBytes(kSecRandomDefault, buffer.count, buffer.baseAddress!)
-        }
-        guard randomStatus == errSecSuccess else {
-            throw PronoteLiveError.randomGenerationFailed
-        }
-
         let initial = try await functionClient.start(
             session: sessionParameters,
-            serverURL: credentials.serverURL,
-            clientIdentifier: options.clientIdentifier,
-            temporaryIV: temporaryIV
+            clientIdentifier: options.clientIdentifier
         )
         let authenticator = PronoteAuthenticator(transport: transport)
+        let effectiveOptions: PronoteLoginOptions
+
+        if credentials.usesMobileToken {
+            effectiveOptions = PronoteLoginOptions(
+                mobileUUID: credentials.mobileUUID,
+                clientIdentifier: credentials.mobileUUID,
+                mobileToken: credentials.password
+            )
+        } else {
+            effectiveOptions = options
+        }
+
         let authentication = try await authenticator.authenticate(
             credentials: credentials,
             session: sessionParameters,
             initial: initial,
-            options: options
+            options: effectiveOptions
         )
         let client = PronoteSessionClient(transport: transport, session: authentication)
+
+        if credentials.usesMobileToken,
+           let refreshedToken = authentication.mobileToken,
+           !refreshedToken.isEmpty,
+           let secretStore {
+            let refreshedCredentials = PronoteCredentials(
+                serverURL: credentials.serverURL,
+                username: credentials.username,
+                password: refreshedToken,
+                usesMobileToken: true,
+                mobileUUID: credentials.mobileUUID
+            )
+            try CredentialsStore(store: secretStore).save(refreshedCredentials)
+        }
+
         sessionClient = client
         return client
     }
@@ -130,11 +189,7 @@ final class LivePronoteClient: PronoteClient {
 
 enum PronoteLiveError: Error, LocalizedError, Equatable {
     case missingResource
-    case randomGenerationFailed
     var errorDescription: String? {
-        switch self {
-        case .missingResource: return "PRONOTE n'a pas fourni la ressource élève nécessaire pour récupérer les données."
-        case .randomGenerationFailed: return "Impossible de générer l'IV temporaire PRONOTE."
-        }
+        switch self { case .missingResource: return "PRONOTE n'a pas fourni la ressource élève nécessaire pour récupérer les données." }
     }
 }

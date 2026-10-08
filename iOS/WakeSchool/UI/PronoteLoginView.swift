@@ -4,21 +4,19 @@ struct PronoteLoginView: View {
     @EnvironmentObject private var dataStore: SchoolDataStore
     @Environment(\.dismiss) private var dismiss
 
-    @State private var serverURL = ""
-    @State private var username = ""
-    @State private var password = ""
-
+    @State private var pin = ""
     @State private var isConnecting = false
     @State private var errorMessage: String?
-    @State private var showPassword = false
+    @State private var showingScanner = false
+    @State private var scannedQRCode: String?
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 24) {
                     header
-
-                    credentialsForm
+                    qrSection
+                    pinSection
 
                     if let errorMessage {
                         errorView(message: errorMessage)
@@ -26,7 +24,7 @@ struct PronoteLoginView: View {
 
                     connectButton
 
-                    Text("Tes identifiants sont stockés uniquement dans le Keychain de l’iPhone.")
+                    Text("Le QR code et le jeton PRONOTE sont utilisés uniquement pour connecter cet iPhone. Les données sensibles restent dans le Keychain.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -36,11 +34,16 @@ struct PronoteLoginView: View {
             }
             .navigationTitle("PRONOTE")
             .navigationBarTitleDisplayMode(.inline)
+            .sheet(isPresented: $showingScanner) {
+                PronoteQRScannerView { value in
+                    showingScanner = false
+                    scannedQRCode = value
+                    errorMessage = nil
+                }
+            }
         }
         .interactiveDismissDisabled(isConnecting)
     }
-
-    // MARK: - Header
 
     private var header: some View {
         VStack(spacing: 12) {
@@ -51,85 +54,60 @@ struct PronoteLoginView: View {
             Text("Connexion à PRONOTE")
                 .font(.title.bold())
 
-            Text("Connecte ton compte PRONOTE pour importer ton emploi du temps, tes devoirs et tes notes.")
+            Text("Scanne le QR code généré dans PRONOTE, puis saisis le code à 4 chiffres choisi lors de sa création.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
     }
 
-    // MARK: - Formulaire
-
-    private var credentialsForm: some View {
-        VStack(spacing: 16) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Adresse PRONOTE")
-                    .font(.headline)
-
-                TextField(
-                    "https://.../pronote",
-                    text: $serverURL
+    private var qrSection: some View {
+        VStack(spacing: 12) {
+            Button {
+                errorMessage = nil
+                showingScanner = true
+            } label: {
+                Label(
+                    scannedQRCode == nil ? "Scanner le QR code" : "Scanner un nouveau QR code",
+                    systemImage: "qrcode.viewfinder"
                 )
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-                .textFieldStyle(.roundedBorder)
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .frame(height: 56)
             }
+            .buttonStyle(.borderedProminent)
+            .disabled(isConnecting)
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Identifiant")
-                    .font(.headline)
-
-                TextField(
-                    "Identifiant PRONOTE",
-                    text: $username
-                )
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .textFieldStyle(.roundedBorder)
+            HStack(spacing: 8) {
+                Image(systemName: scannedQRCode == nil ? "qrcode" : "checkmark.circle.fill")
+                Text(scannedQRCode == nil ? "Aucun QR code scanné" : "QR code scanné")
             }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Mot de passe")
-                    .font(.headline)
-
-                HStack(spacing: 8) {
-                    Group {
-                        if showPassword {
-                            TextField(
-                                "Mot de passe",
-                                text: $password
-                            )
-                        } else {
-                            SecureField(
-                                "Mot de passe",
-                                text: $password
-                            )
-                        }
-                    }
-
-                    Button {
-                        showPassword.toggle()
-                    } label: {
-                        Image(
-                            systemName: showPassword
-                                ? "eye.slash"
-                                : "eye"
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.secondary.opacity(0.35))
-                )
-            }
+            .font(.subheadline)
+            .foregroundStyle(scannedQRCode == nil ? .secondary : .green)
         }
     }
 
-    // MARK: - Erreur
+    private var pinSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Code de vérification")
+                .font(.headline)
+
+            TextField("1234", text: $pin)
+                .keyboardType(.numberPad)
+                .textContentType(.oneTimeCode)
+                .multilineTextAlignment(.center)
+                .font(.title2.monospacedDigit())
+                .textFieldStyle(.roundedBorder)
+                .onChange(of: pin) { _, newValue in
+                    let digits = newValue.filter(\.isNumber)
+                    pin = String(digits.prefix(4))
+                }
+
+            Text("Ce code est celui demandé par PRONOTE au moment où tu génères le QR code.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
 
     private func errorView(message: String) -> some View {
         Label {
@@ -142,25 +120,20 @@ struct PronoteLoginView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    // MARK: - Bouton
-
     private var connectButton: some View {
         Button {
-            Task {
-                await connect()
-            }
+            Task { await connect() }
         } label: {
             Group {
                 if isConnecting {
                     HStack(spacing: 10) {
                         ProgressView()
                             .tint(.white)
-
                         Text("Connexion...")
                             .fontWeight(.semibold)
                     }
                 } else {
-                    Text("Se connecter")
+                    Text("Se connecter à PRONOTE")
                         .fontWeight(.semibold)
                 }
             }
@@ -171,58 +144,28 @@ struct PronoteLoginView: View {
         .disabled(isConnecting || !canConnect)
     }
 
-    // MARK: - Validation
-
     private var canConnect: Bool {
-        !serverURL
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .isEmpty &&
-        !username
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .isEmpty &&
-        !password.isEmpty
+        scannedQRCode != nil && pin.count == 4
     }
 
-    // MARK: - Connexion
-
     private func connect() async {
-        guard canConnect else {
-            return
-        }
+        guard let scannedQRCode, canConnect else { return }
 
         isConnecting = true
         errorMessage = nil
-
-        let credentials = PronoteCredentials(
-            serverURL: serverURL
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-            username: username
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-            password: password
-        )
+        defer { isConnecting = false }
 
         do {
-            // 1. On teste réellement les identifiants.
-            let client = LivePronoteClient(
-                credentials: credentials
+            let result = try await LivePronoteClient.loginWithQRCode(
+                qrText: scannedQRCode,
+                pin: pin
             )
 
-            _ = try await client.profile()
-
-            // 2. Seulement si l'authentification réussit,
-            //    on sauvegarde les identifiants.
-            try CredentialsStore(
-                store: dataStore.environmentSecrets
-            ).save(credentials)
-
-            // 3. On bascule WakeSchool sur PRONOTE.
+            try CredentialsStore(store: dataStore.environmentSecrets).save(result.credentials)
             dataStore.setDataSource(.pronote)
-
-            // 4. On recharge les données avec le nouveau provider.
+            dataStore.reloadProvider()
             await dataStore.refresh()
 
-            // 5. Si la synchronisation échoue,
-            //    on affiche l'erreur au lieu de fermer silencieusement.
             if let error = dataStore.errorMessage {
                 throw PronoteLoginViewError.connectionFailed(error)
             }
@@ -231,8 +174,6 @@ struct PronoteLoginView: View {
         } catch {
             errorMessage = error.localizedDescription
         }
-
-        isConnecting = false
     }
 }
 
