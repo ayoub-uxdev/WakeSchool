@@ -44,7 +44,7 @@ enum PronoteMapper {
         for key in keys {
             if let array = dictionary[key] as? [[String: Any]] { return array }
         }
-        if let found = PronoteJSON.recursivelyFindDictionary(root, keys: Set(keys)) {
+        if let found = PronoteJSON.recursivelyFindDictionary(root, keys: keys) {
             for key in keys { if let array = found[key] as? [[String: Any]] { return array } }
         }
         return []
