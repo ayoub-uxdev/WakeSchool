@@ -101,7 +101,7 @@ enum PronoteCodec {
                 guard let hexString = String(data: destination, encoding: .ascii) else {
                     throw PronoteCodecError.invalidHex
                 }
-                return try data(fromHex: hexString)
+                return try Self.data(fromHex: hexString)
             }
             guard status == 0 else {
                 throw PronoteCodecError.decompressionFailed

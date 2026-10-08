@@ -13,6 +13,7 @@ struct PronoteAuthenticationResult {
     let sessionID: String
     let spaceID: Int
     let rootURL: URL
+    let version: [Int]
     let requestNumber: Int
     let sessionKey: Data
     let sessionIV: Data
@@ -190,6 +191,7 @@ struct PronoteAuthenticator {
             sessionID: session.sessionID,
             spaceID: session.spaceID,
             rootURL: session.rootURL,
+            version: session.version,
             requestNumber: initial.requestNumber + 4,
             sessionKey: sessionKey,
             sessionIV: initial.sessionIV,

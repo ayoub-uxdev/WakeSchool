@@ -365,13 +365,12 @@ final class PronoteHTTPTransport: PronoteHTTPTransporting {
         _ pattern: String,
         in text: String
     ) -> NSTextCheckingResult? {
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let range = Range(text.startIndex..<text.endIndex, in: text) else {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
             return nil
         }
         return regex.firstMatch(
             in: text,
-            range: NSRange(range, in: text)
+            range: NSRange(text.startIndex..<text.endIndex, in: text)
         )
     }
 
@@ -444,7 +443,7 @@ final class PronoteHTTPTransport: PronoteHTTPTransporting {
     private static func firstStartObject(
         in html: String,
         pattern: String
-    ) -> Range<String.Index>? {
+    ) -> ClosedRange<String.Index>? {
         guard let start = html.range(
             of: pattern,
             options: .regularExpression
