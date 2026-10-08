@@ -1,7 +1,6 @@
 import Foundation
 import Compression
 
-/// Erreurs de la couche d'encodage `dataSec` de PRONOTE.
 enum PronoteCodecError: Error, Equatable {
     case invalidJSON
     case compressionFailed
@@ -9,22 +8,11 @@ enum PronoteCodecError: Error, Equatable {
     case invalidHex
 }
 
-/// Représentation de `dataSec` avant insertion dans le corps HTTP.
 enum PronoteDataSec {
     case jsonObject(Any)
     case encodedHex(String)
 }
 
-/// Codec du protocole PRONOTE.
-///
-/// Pipeline :
-///
-/// JSON UTF-8
-/// → DEFLATE
-/// → AES-CBC
-/// → hexadécimal
-///
-/// La compression est effectuée avant le chiffrement.
 enum PronoteCodec {
 
     // MARK: - JSON
@@ -57,147 +45,114 @@ enum PronoteCodec {
 
     // MARK: - Compression
 
-    /// Compression DEFLATE via Compression.framework.
+    /// Compression ZLIB/DEFLATE utilisée par PRONOTE.
     static func deflate(_ data: Data) throws -> Data {
         guard !data.isEmpty else {
             return Data()
         }
 
-        return try process(
-            data,
-            operation: COMPRESSION_STREAM_ENCODE
+        let destinationCapacity = max(
+            1024,
+            data.count * 2
         )
+
+        var destination = Data(
+            count: destinationCapacity
+        )
+
+        let encodedSize: Int = data.withUnsafeBytes { sourceBuffer in
+            destination.withUnsafeMutableBytes { destinationBuffer in
+
+                guard let sourcePointer =
+                        sourceBuffer.bindMemory(
+                            to: UInt8.self
+                        ).baseAddress,
+
+                      let destinationPointer =
+                        destinationBuffer.bindMemory(
+                            to: UInt8.self
+                        ).baseAddress
+                else {
+                    return 0
+                }
+
+                return compression_encode_buffer(
+                    destinationPointer,
+                    destinationCapacity,
+                    sourcePointer,
+                    data.count,
+                    nil,
+                    COMPRESSION_ZLIB
+                )
+            }
+        }
+
+        guard encodedSize > 0 else {
+            throw PronoteCodecError.compressionFailed
+        }
+
+        destination.count = encodedSize
+        return destination
     }
 
-    /// Décompression via Compression.framework.
+    /// Décompression ZLIB/DEFLATE utilisée par PRONOTE.
+    ///
+    /// La taille du résultat n'étant pas connue à l'avance,
+    /// on agrandit progressivement le buffer.
     static func inflate(_ data: Data) throws -> Data {
         guard !data.isEmpty else {
             return Data()
         }
 
-        return try process(
-            data,
-            operation: COMPRESSION_STREAM_DECODE
-        )
-    }
-
-    private static func process(
-        _ data: Data,
-        operation: compression_stream_operation
-    ) throws -> Data {
-
-        // Xcode 27 / SDK iOS 27 expose explicitement cet initialiseur.
-        var stream = compression_stream(
-            dst_ptr: nil,
-            dst_size: 0,
-            src_ptr: nil,
-            src_size: 0,
-            state: nil
+        var destinationCapacity = max(
+            4096,
+            data.count * 4
         )
 
-        let initStatus = compression_stream_init(
-            &stream,
-            operation,
-            COMPRESSION_ZLIB
-        )
+        let maximumCapacity = 64 * 1024 * 1024
 
-        guard initStatus != COMPRESSION_STATUS_ERROR else {
-            if operation == COMPRESSION_STREAM_ENCODE {
-                throw PronoteCodecError.compressionFailed
-            } else {
-                throw PronoteCodecError.decompressionFailed
-            }
-        }
+        while destinationCapacity <= maximumCapacity {
 
-        defer {
-            compression_stream_destroy(&stream)
-        }
+            var destination = Data(
+                count: destinationCapacity
+            )
 
-        let outputCapacity = 64 * 1024
-        var output = Data()
-        var outputBuffer = [UInt8](
-            repeating: 0,
-            count: outputCapacity
-        )
+            let decodedSize: Int = data.withUnsafeBytes { sourceBuffer in
+                destination.withUnsafeMutableBytes { destinationBuffer in
 
-        return try data.withUnsafeBytes { rawInput in
+                    guard let sourcePointer =
+                            sourceBuffer.bindMemory(
+                                to: UInt8.self
+                            ).baseAddress,
 
-            guard let inputPointer =
-                    rawInput.bindMemory(
-                        to: UInt8.self
-                    ).baseAddress
-            else {
-                if operation == COMPRESSION_STREAM_ENCODE {
-                    throw PronoteCodecError.compressionFailed
-                } else {
-                    throw PronoteCodecError.decompressionFailed
-                }
-            }
-
-            stream.src_ptr = inputPointer
-            stream.src_size = data.count
-
-            var status: compression_status = COMPRESSION_STATUS_OK
-
-            repeat {
-
-                let produced: Int = outputBuffer.withUnsafeMutableBytes {
-                    rawOutput in
-
-                    guard let outputPointer =
-                            rawOutput.bindMemory(
+                          let destinationPointer =
+                            destinationBuffer.bindMemory(
                                 to: UInt8.self
                             ).baseAddress
                     else {
-                        return -1
+                        return 0
                     }
 
-                    stream.dst_ptr = outputPointer
-                    stream.dst_size = outputCapacity
-
-                    status = compression_stream_process(
-                        &stream,
-                        Int32(COMPRESSION_STREAM_FINALIZE.rawValue)
+                    return compression_decode_buffer(
+                        destinationPointer,
+                        destinationCapacity,
+                        sourcePointer,
+                        data.count,
+                        nil,
+                        COMPRESSION_ZLIB
                     )
-
-                    return outputCapacity - stream.dst_size
-                }
-
-                guard produced >= 0 else {
-                    if operation == COMPRESSION_STREAM_ENCODE {
-                        throw PronoteCodecError.compressionFailed
-                    } else {
-                        throw PronoteCodecError.decompressionFailed
-                    }
-                }
-
-                if produced > 0 {
-                    output.append(
-                        outputBuffer,
-                        count: produced
-                    )
-                }
-
-                if status == COMPRESSION_STATUS_ERROR {
-                    if operation == COMPRESSION_STREAM_ENCODE {
-                        throw PronoteCodecError.compressionFailed
-                    } else {
-                        throw PronoteCodecError.decompressionFailed
-                    }
-                }
-
-            } while status == COMPRESSION_STATUS_OK
-
-            guard status == COMPRESSION_STATUS_END else {
-                if operation == COMPRESSION_STREAM_ENCODE {
-                    throw PronoteCodecError.compressionFailed
-                } else {
-                    throw PronoteCodecError.decompressionFailed
                 }
             }
 
-            return output
+            if decodedSize > 0 {
+                destination.count = decodedSize
+                return destination
+            }
+
+            destinationCapacity *= 2
         }
+
+        throw PronoteCodecError.decompressionFailed
     }
 
     // MARK: - Hex
