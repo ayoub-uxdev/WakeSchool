@@ -104,20 +104,14 @@ struct PronoteAuthenticator {
         let normalizedUsername = modeCompLog ? username.lowercased() : username
         let normalizedPassword = modeCompMdp ? password.lowercased() : password
 
-        let authKey: Data
-        if options.useENT {
-            let mtp = PronoteCrypto.hexString(
-                from: PronoteCrypto.sha256(Data(normalizedPassword.utf8)),
-                uppercase: true
-            )
-            authKey = PronoteCrypto.md5(Data(mtp.utf8))
-        } else {
-            let mtp = PronoteCrypto.hexString(
-                from: PronoteCrypto.sha256(Data((alea + normalizedPassword).utf8)),
-                uppercase: true
-            )
-            authKey = PronoteCrypto.md5(Data((normalizedUsername + mtp).utf8))
-        }
+        let loginKeys = PronoteCrypto.deriveLoginKeys(
+            username: normalizedUsername,
+            password: normalizedPassword,
+            alea: alea,
+            ivTemp: initial.temporaryIV,
+            isENT: options.useENT
+        )
+        let authKey = loginKeys.authKey
 
         let challengeBytes: Data
         do {

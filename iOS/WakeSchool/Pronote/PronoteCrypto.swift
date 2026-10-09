@@ -251,12 +251,30 @@ enum PronoteCrypto {
                                 alea: String,
                                 ivTemp: Data,
                                 isENT: Bool) -> LoginKeys {
-        let hashed = isENT ? password : alea + password
-        let shaUpper = hexString(from: sha256(Data(hashed.utf8)), uppercase: true)
-        let seed = isENT ? shaUpper : username + shaUpper
+        var passwordInput = Data()
+        if !isENT {
+            passwordInput.append(binaryStringData(alea))
+        }
+        passwordInput.append(Data(password.utf8))
+
+        let shaUpper = hexString(
+            from: sha256(passwordInput),
+            uppercase: true
+        )
+        var keySeed = Data()
+        if !isENT {
+            keySeed.append(binaryStringData(username))
+        }
+        keySeed.append(Data(shaUpper.utf8))
+
         return LoginKeys(sha256UpperHex: shaUpper,
-                         authKey: aesKey(fromSeed: Data(seed.utf8)),
+                         authKey: aesKey(fromSeed: keySeed),
                          iv: md5(ivTemp))
+    }
+
+    /// Pawnote/node-forge treats untagged binary strings as one byte per UTF-16 code unit.
+    static func binaryStringData(_ string: String) -> Data {
+        Data(string.utf16.map { UInt8(truncatingIfNeeded: $0) })
     }
 
     /// Équivalent de `_Communication.after_auth` : déchiffre `cle` (hexadécimal chiffré en AES),
