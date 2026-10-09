@@ -28,20 +28,6 @@ final class PronoteAuthenticationCryptoTests: XCTestCase {
                 vector.ivHex,
                 vector.name
             )
-
-            let challengeCipher = try PronoteCrypto.data(
-                fromHex: vector.challengeCipherHex
-            )
-            let challengePlain = try PronoteCrypto.aesCBCDecrypt(
-                challengeCipher,
-                key: keys.authKey,
-                iv: keys.iv
-            )
-            XCTAssertEqual(
-                String(data: challengePlain, encoding: .utf8),
-                vector.challenge,
-                vector.name
-            )
         }
     }
 

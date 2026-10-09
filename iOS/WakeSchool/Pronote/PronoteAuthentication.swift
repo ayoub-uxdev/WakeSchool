@@ -27,24 +27,8 @@ struct PronoteAuthenticationResult {
 enum PronoteAuthenticationError: Error, LocalizedError, Equatable {
     case invalidResponse
     case missingField(String)
-    case challengeDecryptionFailed(
-        version: [Int],
-        challengeByteCount: Int,
-        aleaByteCount: Int,
-        loginByteCount: Int,
-        loginUTF8ByteCount: Int,
-        tokenByteCount: Int,
-        tokenUTF8ByteCount: Int,
-        temporaryIVByteCount: Int,
-        sessionIVByteCount: Int,
-        loginWasNormalized: Bool,
-        passwordWasNormalized: Bool,
-        requestsAreEncrypted: Bool,
-        requestsAreCompressed: Bool,
-        isQRLogin: Bool,
-        usesENTAuthentication: Bool
-    )
     case challengeFormatInvalid
+    case authenticationRejected(Int)
     case missingSessionKey
     case unsupportedLogin
 
@@ -54,38 +38,13 @@ enum PronoteAuthenticationError: Error, LocalizedError, Equatable {
             return "Réponse d'authentification PRONOTE invalide."
         case .missingField(let field):
             return "Champ PRONOTE manquant : \(field)."
-        case .challengeDecryptionFailed(
-            let version,
-            let challengeByteCount,
-            let aleaByteCount,
-            let loginByteCount,
-            let loginUTF8ByteCount,
-            let tokenByteCount,
-            let tokenUTF8ByteCount,
-            let temporaryIVByteCount,
-            let sessionIVByteCount,
-            let loginWasNormalized,
-            let passwordWasNormalized,
-            let requestsAreEncrypted,
-            let requestsAreCompressed,
-            let isQRLogin,
-            let usesENTAuthentication
-        ):
-            let versionText = version.map(String.init).joined(separator: ".")
-            return """
-                Impossible de déchiffrer le challenge PRONOTE. \
-                Diagnostic sans identifiants : version=\(versionText), \
-                challenge=\(challengeByteCount) octets, alea=\(aleaByteCount) octets, \
-                login=\(loginByteCount) octets/\(loginUTF8ByteCount) UTF-8, \
-                jeton=\(tokenByteCount) octets/\(tokenUTF8ByteCount) UTF-8, \
-                IVtemp=\(temporaryIVByteCount) octets, IVsession=\(sessionIVByteCount) octets, \
-                loginNormalisé=\(loginWasNormalized), motDePasseNormalisé=\(passwordWasNormalized), \
-                requêtesChiffrées=\(requestsAreEncrypted), \
-                requêtesCompressées=\(requestsAreCompressed), QR=\(isQRLogin), \
-                modeENT=\(usesENTAuthentication).
-                """
         case .challengeFormatInvalid:
-            return "Challenge PRONOTE invalide."
+            return "PRONOTE a renvoyé un challenge vide ou invalide."
+        case .authenticationRejected(let code):
+            if code == 1 {
+                return "PRONOTE a refusé l'identifiant ou le mot de passe (code 1)."
+            }
+            return "PRONOTE a refusé l'authentification (code \(code))."
         case .missingSessionKey:
             return "PRONOTE n'a pas fourni de clé de session."
         case .unsupportedLogin:
@@ -146,24 +105,25 @@ struct PronoteAuthenticator {
             encrypted: initial.requestsAreEncrypted
         )
 
-        var identificationData = try Self.dataDictionary(
+        let identificationData = try Self.dataDictionary(
             from: identificationResponse,
             version: session.version
         )
-        var challenge = try Self.string(identificationData["challenge"], field: "challenge")
-        var alea = (identificationData["alea"] as? String) ?? ""
-        var modeCompMdp = Self.int(identificationData["modeCompMdp"]) == 1
-        var modeCompLog = Self.int(identificationData["modeCompLog"]) == 1
+        let challenge = try Self.string(identificationData["challenge"], field: "challenge")
+        guard !challenge.isEmpty else {
+            throw PronoteAuthenticationError.challengeFormatInvalid
+        }
+        let alea = (identificationData["alea"] as? String) ?? ""
+        let modeCompMdp = Self.int(identificationData["modeCompMdp"]) > 0
+        let modeCompLog = Self.int(identificationData["modeCompLog"]) > 0
 
-        var normalizedUsername = modeCompLog ? username.lowercased() : username
+        let normalizedUsername = modeCompLog ? username.lowercased() : username
         var normalizedPassword = password.trimmingCharacters(in: .whitespacesAndNewlines)
         if modeCompMdp {
             normalizedPassword = normalizedPassword.lowercased()
         }
 
-        var authenticationUsesENT = options.useENT
-        var usedENTFallback = false
-        var authKey: Data
+        let authKey: Data
         if let mobileToken = options.mobileToken {
             authKey = PronoteCrypto.aesKey(fromSeed: Data(mobileToken.utf8))
         } else {
@@ -172,126 +132,24 @@ struct PronoteAuthenticator {
                 password: normalizedPassword,
                 alea: alea,
                 ivTemp: initial.temporaryIV,
-                isENT: authenticationUsesENT
+                isENT: options.useENT
             ).authKey
         }
 
-        var challengeBytes: Data
-        do {
-            challengeBytes = try PronoteCrypto.data(fromHex: challenge)
-        } catch {
-            throw PronoteAuthenticationError.challengeFormatInvalid
-        }
-
-        var challengePlain: Data
-        do {
-            challengePlain = try PronoteCrypto.aesCBCDecrypt(
-                challengeBytes,
-                key: authKey,
-                iv: initial.sessionIV
-            )
-        } catch {
-            guard isQRLogin, !authenticationUsesENT else {
-                throw Self.challengeDecryptionError(
-                    version: session.version,
-                    challengeBytes: challengeBytes,
-                    alea: alea,
-                    username: normalizedUsername,
-                    password: normalizedPassword,
-                    initial: initial,
-                    modeCompLog: modeCompLog,
-                    modeCompMdp: modeCompMdp,
-                    isQRLogin: isQRLogin,
-                    usesENTAuthentication: authenticationUsesENT
-                )
-            }
-
-            var entIdentification = identification
-            entIdentification["pourENT"] = true
-            let entIdentificationResponse = try await post(
-                function: "Identification",
-                data: [apiProperties.data: entIdentification],
-                session: session,
-                requestNumber: initial.requestNumber + 2,
-                key: defaultKey,
-                iv: initial.sessionIV,
-                compressed: initial.requestsAreCompressed,
-                encrypted: initial.requestsAreEncrypted
-            )
-            identificationData = try Self.dataDictionary(
-                from: entIdentificationResponse,
-                version: session.version
-            )
-            challenge = try Self.string(identificationData["challenge"], field: "challenge")
-            alea = (identificationData["alea"] as? String) ?? ""
-            modeCompMdp = Self.int(identificationData["modeCompMdp"]) == 1
-            modeCompLog = Self.int(identificationData["modeCompLog"]) == 1
-            normalizedUsername = modeCompLog ? username.lowercased() : username
-            normalizedPassword = password.trimmingCharacters(in: .whitespacesAndNewlines)
-            if modeCompMdp {
-                normalizedPassword = normalizedPassword.lowercased()
-            }
-            authenticationUsesENT = true
-            usedENTFallback = true
-
-            do {
-                challengeBytes = try PronoteCrypto.data(fromHex: challenge)
-            } catch {
-                throw PronoteAuthenticationError.challengeFormatInvalid
-            }
-            authKey = PronoteCrypto.deriveLoginKeys(
-                username: normalizedUsername,
-                password: normalizedPassword,
-                alea: alea,
-                ivTemp: initial.temporaryIV,
-                isENT: authenticationUsesENT
-            ).authKey
-
-            do {
-                challengePlain = try PronoteCrypto.aesCBCDecrypt(
-                    challengeBytes,
-                    key: authKey,
-                    iv: initial.sessionIV
-                )
-            } catch {
-                throw Self.challengeDecryptionError(
-                    version: session.version,
-                    challengeBytes: challengeBytes,
-                    alea: alea,
-                    username: normalizedUsername,
-                    password: normalizedPassword,
-                    initial: initial,
-                    modeCompLog: modeCompLog,
-                    modeCompMdp: modeCompMdp,
-                    isQRLogin: isQRLogin,
-                    usesENTAuthentication: authenticationUsesENT
-                )
-            }
-        }
-
-        guard let challengeText = String(data: challengePlain, encoding: .utf8) else {
-            throw PronoteAuthenticationError.challengeFormatInvalid
-        }
-
-        let solved = String(
-            challengeText.enumerated().compactMap {
-                $0.offset.isMultiple(of: 2) ? $0.element : nil
-            }
-        )
-
-        let solvedCipher = try PronoteCrypto.aesCBCEncrypt(
-            Data(solved.utf8),
+        // PRONOTE returns a plaintext UTF-8 challenge; AES-CBC/hex is applied only to the answer.
+        let solvedChallenge = try PronoteCrypto.aesCBCEncrypt(
+            Data(challenge.utf8),
             key: authKey,
             iv: initial.sessionIV
         )
 
         var authData: [String: Any] = [
             "connexion": 0,
-            "challenge": PronoteCrypto.hexString(from: solvedCipher, uppercase: false),
+            "challenge": PronoteCrypto.hexString(from: solvedChallenge, uppercase: false),
             "espace": session.spaceID
         ]
         if isTokenLogin {
-            authData["pourENT"] = authenticationUsesENT
+            authData["pourENT"] = options.useENT
             authData["identifiant"] = username
             authData["enConnexionAppliMobile"] = true
             authData["demandeConnexionAppliMobile"] = false
@@ -304,7 +162,7 @@ struct PronoteAuthenticator {
             function: "Authentification",
             data: [apiProperties.data: authData],
             session: session,
-            requestNumber: initial.requestNumber + (usedENTFallback ? 4 : 2),
+            requestNumber: initial.requestNumber + 2,
             key: defaultKey,
             iv: initial.sessionIV,
             compressed: initial.requestsAreCompressed,
@@ -315,6 +173,10 @@ struct PronoteAuthenticator {
             from: authResponse,
             version: session.version
         )
+        let accessCode = Self.int(authenticatedData["Acces"])
+        if accessCode != 0 {
+            throw PronoteAuthenticationError.authenticationRejected(accessCode)
+        }
         guard let cle = authenticatedData["cle"] as? String else {
             throw PronoteAuthenticationError.missingSessionKey
         }
@@ -333,7 +195,7 @@ struct PronoteAuthenticator {
             spaceID: session.spaceID,
             rootURL: session.rootURL,
             version: session.version,
-            requestNumber: initial.requestNumber + (usedENTFallback ? 6 : 4),
+            requestNumber: initial.requestNumber + 4,
             sessionKey: sessionKey,
             sessionIV: initial.sessionIV,
             requestsAreEncrypted: initial.requestsAreEncrypted,
@@ -341,37 +203,6 @@ struct PronoteAuthenticator {
             userName: userName,
             mobileToken: token,
             initialParameters: nil
-        )
-    }
-
-    private static func challengeDecryptionError(
-        version: [Int],
-        challengeBytes: Data,
-        alea: String,
-        username: String,
-        password: String,
-        initial: PronoteInitialSession,
-        modeCompLog: Bool,
-        modeCompMdp: Bool,
-        isQRLogin: Bool,
-        usesENTAuthentication: Bool
-    ) -> PronoteAuthenticationError {
-        PronoteAuthenticationError.challengeDecryptionFailed(
-            version: version,
-            challengeByteCount: challengeBytes.count,
-            aleaByteCount: PronoteCrypto.binaryStringData(alea).count,
-            loginByteCount: PronoteCrypto.binaryStringData(username).count,
-            loginUTF8ByteCount: Data(username.utf8).count,
-            tokenByteCount: PronoteCrypto.binaryStringData(password).count,
-            tokenUTF8ByteCount: Data(password.utf8).count,
-            temporaryIVByteCount: initial.temporaryIV.count,
-            sessionIVByteCount: initial.sessionIV.count,
-            loginWasNormalized: modeCompLog,
-            passwordWasNormalized: modeCompMdp,
-            requestsAreEncrypted: initial.requestsAreEncrypted,
-            requestsAreCompressed: initial.requestsAreCompressed,
-            isQRLogin: isQRLogin,
-            usesENTAuthentication: usesENTAuthentication
         )
     }
 
