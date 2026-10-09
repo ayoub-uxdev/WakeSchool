@@ -74,8 +74,8 @@ enum PronoteQRLogin {
             let loginData = try PronoteCrypto.aesCBCDecrypt(encryptedLogin, key: key, iv: iv)
             let tokenData = try PronoteCrypto.aesCBCDecrypt(encryptedToken, key: key, iv: iv)
 
-            guard let login = String(data: loginData, encoding: .utf8),
-                  let token = String(data: tokenData, encoding: .utf8),
+            guard let login = String(data: loginData, encoding: .isoLatin1),
+                  let token = String(data: tokenData, encoding: .isoLatin1),
                   !login.isEmpty,
                   !token.isEmpty else {
                 throw PronoteQRLoginError.emptyCredentials

@@ -82,7 +82,6 @@ jobs:
           retention-days: 14
 
       - name: Lancer les tests unitaires (simulateur)
-        if: github.event_name == 'workflow_dispatch'
         working-directory: iOS
         run: |
           set -o pipefail

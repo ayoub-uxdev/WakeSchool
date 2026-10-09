@@ -158,7 +158,7 @@ struct PronoteAuthenticator {
             data: [apiProperties.data: authData],
             session: session,
             requestNumber: initial.requestNumber + 2,
-            key: authKey,
+            key: defaultKey,
             iv: initial.sessionIV,
             compressed: initial.requestsAreCompressed,
             encrypted: initial.requestsAreEncrypted
