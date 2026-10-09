@@ -31,6 +31,12 @@ enum PronoteAuthenticationError: Error, LocalizedError, Equatable {
         version: [Int],
         challengeByteCount: Int,
         aleaByteCount: Int,
+        loginByteCount: Int,
+        loginUTF8ByteCount: Int,
+        tokenByteCount: Int,
+        tokenUTF8ByteCount: Int,
+        temporaryIVByteCount: Int,
+        sessionIVByteCount: Int,
         loginWasNormalized: Bool,
         passwordWasNormalized: Bool,
         requestsAreEncrypted: Bool,
@@ -51,6 +57,12 @@ enum PronoteAuthenticationError: Error, LocalizedError, Equatable {
             let version,
             let challengeByteCount,
             let aleaByteCount,
+            let loginByteCount,
+            let loginUTF8ByteCount,
+            let tokenByteCount,
+            let tokenUTF8ByteCount,
+            let temporaryIVByteCount,
+            let sessionIVByteCount,
             let loginWasNormalized,
             let passwordWasNormalized,
             let requestsAreEncrypted,
@@ -62,6 +74,9 @@ enum PronoteAuthenticationError: Error, LocalizedError, Equatable {
                 Impossible de déchiffrer le challenge PRONOTE. \
                 Diagnostic sans identifiants : version=\(versionText), \
                 challenge=\(challengeByteCount) octets, alea=\(aleaByteCount) octets, \
+                login=\(loginByteCount) octets/\(loginUTF8ByteCount) UTF-8, \
+                jeton=\(tokenByteCount) octets/\(tokenUTF8ByteCount) UTF-8, \
+                IVtemp=\(temporaryIVByteCount) octets, IVsession=\(sessionIVByteCount) octets, \
                 loginNormalisé=\(loginWasNormalized), motDePasseNormalisé=\(passwordWasNormalized), \
                 requêtesChiffrées=\(requestsAreEncrypted), \
                 requêtesCompressées=\(requestsAreCompressed), QR=\(isQRLogin).
@@ -158,6 +173,12 @@ struct PronoteAuthenticator {
                 version: session.version,
                 challengeByteCount: challengeBytes.count,
                 aleaByteCount: PronoteCrypto.binaryStringData(alea).count,
+                loginByteCount: PronoteCrypto.binaryStringData(normalizedUsername).count,
+                loginUTF8ByteCount: Data(normalizedUsername.utf8).count,
+                tokenByteCount: PronoteCrypto.binaryStringData(normalizedPassword).count,
+                tokenUTF8ByteCount: Data(normalizedPassword.utf8).count,
+                temporaryIVByteCount: initial.temporaryIV.count,
+                sessionIVByteCount: initial.sessionIV.count,
                 loginWasNormalized: modeCompLog,
                 passwordWasNormalized: modeCompMdp,
                 requestsAreEncrypted: initial.requestsAreEncrypted,
