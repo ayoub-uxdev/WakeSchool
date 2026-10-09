@@ -4,26 +4,53 @@ import WebKit
 
 struct PronoteENTLoginWebView: UIViewRepresentable {
     let url: URL
+    let mobileURL: URL
     let mobileUUID: String
     let onLogin: (String, String) -> Void
     let onHostChange: (String) -> Void
     let onError: (String) -> Void
 
-    static func loginURL(from value: String) throws -> URL {
-        guard let components = URLComponents(
-            string: value.trimmingCharacters(in: .whitespacesAndNewlines)
-        ),
-        components.scheme?.lowercased() == "https",
-        components.host != nil,
-        let url = components.url else {
+    static func loginURLs(
+        from value: String,
+        accountKind: PronoteAccountKind
+    ) throws -> (bootstrapURL: URL, mobileURL: URL) {
+        let directURL: URL
+        do {
+            directURL = try PronoteHTTPTransport.normalizeDirectURL(
+                value,
+                accountKind: accountKind
+            )
+        } catch {
             throw PronoteENTLoginError.invalidURL
         }
-        return url
+        guard directURL.scheme?.lowercased() == "https" else {
+            throw PronoteENTLoginError.invalidURL
+        }
+
+        let rootURL = PronoteHTTPTransport.rootURL(from: directURL)
+        var mobileComponents = URLComponents(
+            url: directURL,
+            resolvingAgainstBaseURL: false
+        )
+        mobileComponents?.queryItems = [URLQueryItem(name: "fd", value: "1")]
+        guard let mobileURL = mobileComponents?.url else {
+            throw PronoteENTLoginError.invalidURL
+        }
+
+        var components = URLComponents(url: rootURL, resolvingAgainstBaseURL: false)
+        components?.path = rootURL.appendingPathComponent("InfoMobileApp.json").path
+        components?.queryItems = [
+            URLQueryItem(name: "id", value: "0D264427-EEFC-4810-A9E9-346942A862A4")
+        ]
+        guard let bootstrapURL = components?.url else {
+            throw PronoteENTLoginError.invalidURL
+        }
+        return (bootstrapURL, mobileURL)
     }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
-            expectedHost: url.host?.lowercased() ?? "",
+            expectedHost: mobileURL.host?.lowercased() ?? "",
             onLogin: onLogin,
             onHostChange: onHostChange,
             onError: onError
@@ -35,7 +62,14 @@ struct PronoteENTLoginWebView: UIViewRepresentable {
         controller.add(context.coordinator, name: "pronoteENTLogin")
         controller.addUserScript(
             WKUserScript(
-                source: loginStateScript,
+                source: mobileHookScript,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+        )
+        controller.addUserScript(
+            WKUserScript(
+                source: documentScript,
                 injectionTime: .atDocumentEnd,
                 forMainFrameOnly: true
             )
@@ -60,17 +94,59 @@ struct PronoteENTLoginWebView: UIViewRepresentable {
         uiView.navigationDelegate = nil
     }
 
-    private var loginStateScript: String {
+    private var mobileHookScript: String {
+        """
+        window.hookAccesDepuisAppli = function() {
+          const deviceUUID = "\(mobileUUID)";
+          if (this && typeof this.passerEnModeValidationAppliMobile === "function") {
+            this.passerEnModeValidationAppliMobile(
+              "",
+              deviceUUID,
+              "",
+              "",
+              JSON.stringify({ model: "iPhone", platform: "ios" })
+            );
+          }
+        };
+        """
+    }
+
+    private var documentScript: String {
         """
         (() => {
           const deviceUUID = "\(mobileUUID)";
           let mobileLoginRequested = false;
           let loginReported = false;
           const handler = window.webkit?.messageHandlers?.pronoteENTLogin;
-          if (!handler) return;
+
+          const prepareMobileLogin = () => {
+            const bodyText = document.body?.innerText?.trim();
+            if (bodyText) {
+              try {
+                const response = JSON.parse(bodyText);
+                const casToken = response?.CAS?.jetonCAS;
+                const expires = new Date(Date.now() + 5 * 60 * 1000).toUTCString();
+                const languageExpires = new Date(
+                  Date.now() + 365 * 24 * 60 * 60 * 1000
+                ).toUTCString();
+
+                if (casToken) {
+                  document.cookie = "appliMobile=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/";
+                  document.cookie = "validationAppliMobile=" + casToken + "; expires=" + expires + "; path=/; SameSite=Lax; Secure";
+                  document.cookie = "uuidAppliMobile=" + deviceUUID + "; expires=" + expires + "; path=/; SameSite=Lax; Secure";
+                } else {
+                  document.cookie = "appliMobile=1; expires=" + expires + "; path=/; SameSite=Lax; Secure";
+                }
+                document.cookie = "ielang=1036; expires=" + languageExpires + "; path=/; SameSite=Lax; Secure";
+                window.location.replace("\(mobileURL.absoluteString)");
+                return true;
+              } catch (_) {}
+            }
+            return false;
+          };
 
           const inspectLogin = () => {
-            if (loginReported) return;
+            if (!handler || loginReported) return;
             const state = window.loginState;
             if (state && state.status === 0 &&
                 typeof state.login === "string" && state.login.length > 0 &&
@@ -83,7 +159,7 @@ struct PronoteENTLoginWebView: UIViewRepresentable {
             const api = window.GInterface;
             if (!mobileLoginRequested && api &&
                 typeof api.passerEnModeValidationAppliMobile === "function") {
-              mobileLoginRequested = true;
+              try {
                 api.passerEnModeValidationAppliMobile(
                   "",
                   deviceUUID,
@@ -91,12 +167,17 @@ struct PronoteENTLoginWebView: UIViewRepresentable {
                   "",
                   JSON.stringify({ model: "iPhone", platform: "ios" })
                 );
+                mobileLoginRequested = true;
+              } catch (_) {}
             }
           };
 
-          window.hookAccesDepuisAppli = inspectLogin;
+          if (prepareMobileLogin()) return;
+          window.setInterval(() => {
+            if (prepareMobileLogin()) return;
+            inspectLogin();
+          }, 750);
           inspectLogin();
-          window.setInterval(inspectLogin, 750);
         })();
         """
     }
@@ -156,6 +237,11 @@ struct PronoteENTLoginWebView: UIViewRepresentable {
                 decisionHandler(.cancel)
                 return
             }
+            if navigationAction.targetFrame == nil {
+                webView.load(navigationAction.request)
+                decisionHandler(.cancel)
+                return
+            }
             decisionHandler(.allow)
         }
 
@@ -185,6 +271,7 @@ struct PronoteENTLoginWebView: UIViewRepresentable {
         }
 
         private func report(_ error: Error) {
+            guard (error as NSError).code != NSURLErrorCancelled else { return }
             report(error.localizedDescription)
         }
 

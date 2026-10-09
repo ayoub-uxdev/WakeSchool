@@ -17,6 +17,7 @@ struct PronoteLoginView: View {
     @State private var scannedQRCode: String?
     @State private var showingENTBrowser = false
     @State private var entLoginURL: URL?
+    @State private var entMobileURL: URL?
     @State private var entMobileUUID: String?
     @State private var entCurrentHost = ""
 
@@ -61,10 +62,11 @@ struct PronoteLoginView: View {
             }
         }
         .sheet(isPresented: $showingENTBrowser) {
-            if let entLoginURL, let entMobileUUID {
+            if let entLoginURL, let entMobileURL, let entMobileUUID {
                 NavigationStack {
                     PronoteENTLoginWebView(
                         url: entLoginURL,
+                        mobileURL: entMobileURL,
                         mobileUUID: entMobileUUID,
                         onLogin: { username, mobileToken in
                             showingENTBrowser = false
@@ -327,10 +329,14 @@ struct PronoteLoginView: View {
 
         if loginMethod == .credentials && credentialsMethod == .entHDF {
             do {
-                let loginURL = try PronoteENTLoginWebView.loginURL(from: serverURL)
-                entLoginURL = loginURL
-                entCurrentHost = loginURL.host ?? ""
-                serverURL = loginURL.absoluteString
+                let loginURLs = try PronoteENTLoginWebView.loginURLs(
+                    from: serverURL,
+                    accountKind: accountKind
+                )
+                entLoginURL = loginURLs.bootstrapURL
+                entMobileURL = loginURLs.mobileURL
+                entCurrentHost = loginURLs.bootstrapURL.host ?? ""
+                serverURL = PronoteHTTPTransport.rootURL(from: loginURLs.mobileURL).absoluteString
                 entMobileUUID = try PronoteMobileIdentity.sharedUUID()
                 errorMessage = nil
                 showingENTBrowser = true
