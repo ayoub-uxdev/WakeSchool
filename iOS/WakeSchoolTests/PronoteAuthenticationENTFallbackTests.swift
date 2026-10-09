@@ -9,13 +9,13 @@ final class PronoteAuthenticationENTFallbackTests: XCTestCase {
         let temporaryIV = try PronoteCrypto.data(fromHex: vector.ivTempHex)
         let sessionIV = PronoteCrypto.md5(temporaryIV)
         let transport = AuthenticationFakeTransport(responses: [
-            response(challenge: "00000000000000000000000000000000"),
-            response(
+            try response(challenge: "00000000000000000000000000000000"),
+            try response(
                 challenge: vector.challengeCipherHex,
                 alea: vector.alea,
                 modeCompLog: 1
             ),
-            response(cle: vector.cleCipherHex)
+            try response(cle: vector.cleCipherHex)
         ])
         let authenticator = PronoteAuthenticator(transport: transport)
         let credentials = PronoteCredentials(
