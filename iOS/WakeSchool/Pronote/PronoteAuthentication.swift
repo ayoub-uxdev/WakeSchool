@@ -109,6 +109,16 @@ struct PronoteAuthenticator {
 
         let isQRLogin = options.qrLogin
         let isTokenLogin = options.mobileToken != nil
+        let mobileTokenProof: String
+        if let mobileToken = options.mobileToken {
+            mobileTokenProof = try PronoteCrypto.encryptedMobileTokenProof(
+                token: mobileToken,
+                iv: initial.sessionIV
+            )
+        } else {
+            mobileTokenProof = ""
+        }
+        let mobileUUID = options.mobileUUID ?? credentials.mobileUUID ?? ""
         let apiProperties = PronoteAPIProperties.forVersion(session.version)
 
         let identification: [String: Any] = [
@@ -121,8 +131,8 @@ struct PronoteAuthenticator {
             "demandeConnexionAppliMobile": options.requestFirstMobileAuthentication,
             "demandeConnexionAppliMobileJeton": isQRLogin,
             "enConnexionAppliMobile": isTokenLogin,
-            "uuidAppliMobile": options.mobileUUID ?? "",
-            "loginTokenSAV": options.mobileToken ?? ""
+            "uuidAppliMobile": mobileUUID,
+            "loginTokenSAV": mobileTokenProof
         ]
 
         let identificationResponse = try await post(
@@ -146,18 +156,25 @@ struct PronoteAuthenticator {
         var modeCompLog = Self.int(identificationData["modeCompLog"]) == 1
 
         var normalizedUsername = modeCompLog ? username.lowercased() : username
-        var normalizedPassword = modeCompMdp ? password.lowercased() : password
+        var normalizedPassword = password.trimmingCharacters(in: .whitespacesAndNewlines)
+        if modeCompMdp {
+            normalizedPassword = normalizedPassword.lowercased()
+        }
 
         var authenticationUsesENT = options.useENT
         var usedENTFallback = false
-        var loginKeys = PronoteCrypto.deriveLoginKeys(
-            username: normalizedUsername,
-            password: normalizedPassword,
-            alea: alea,
-            ivTemp: initial.temporaryIV,
-            isENT: authenticationUsesENT
-        )
-        var authKey = loginKeys.authKey
+        var authKey: Data
+        if let mobileToken = options.mobileToken {
+            authKey = PronoteCrypto.aesKey(fromSeed: Data(mobileToken.utf8))
+        } else {
+            authKey = PronoteCrypto.deriveLoginKeys(
+                username: normalizedUsername,
+                password: normalizedPassword,
+                alea: alea,
+                ivTemp: initial.temporaryIV,
+                isENT: authenticationUsesENT
+            ).authKey
+        }
 
         var challengeBytes: Data
         do {
@@ -210,7 +227,10 @@ struct PronoteAuthenticator {
             modeCompMdp = Self.int(identificationData["modeCompMdp"]) == 1
             modeCompLog = Self.int(identificationData["modeCompLog"]) == 1
             normalizedUsername = modeCompLog ? username.lowercased() : username
-            normalizedPassword = modeCompMdp ? password.lowercased() : password
+            normalizedPassword = password.trimmingCharacters(in: .whitespacesAndNewlines)
+            if modeCompMdp {
+                normalizedPassword = normalizedPassword.lowercased()
+            }
             authenticationUsesENT = true
             usedENTFallback = true
 
@@ -219,14 +239,13 @@ struct PronoteAuthenticator {
             } catch {
                 throw PronoteAuthenticationError.challengeFormatInvalid
             }
-            loginKeys = PronoteCrypto.deriveLoginKeys(
+            authKey = PronoteCrypto.deriveLoginKeys(
                 username: normalizedUsername,
                 password: normalizedPassword,
                 alea: alea,
                 ivTemp: initial.temporaryIV,
                 isENT: authenticationUsesENT
-            )
-            authKey = loginKeys.authKey
+            ).authKey
 
             do {
                 challengePlain = try PronoteCrypto.aesCBCDecrypt(
@@ -266,11 +285,20 @@ struct PronoteAuthenticator {
             iv: initial.sessionIV
         )
 
-        let authData: [String: Any] = [
+        var authData: [String: Any] = [
             "connexion": 0,
             "challenge": PronoteCrypto.hexString(from: solvedCipher, uppercase: false),
             "espace": session.spaceID
         ]
+        if isTokenLogin {
+            authData["pourENT"] = authenticationUsesENT
+            authData["identifiant"] = username
+            authData["enConnexionAppliMobile"] = true
+            authData["demandeConnexionAppliMobile"] = false
+            authData["demandeConnexionAppliMobileJeton"] = false
+            authData["uuidAppliMobile"] = mobileUUID
+            authData["loginTokenSAV"] = mobileTokenProof
+        }
 
         let authResponse = try await post(
             function: "Authentification",
