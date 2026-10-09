@@ -244,17 +244,14 @@ enum PronoteCrypto {
         let iv: Data
     }
 
-    /// Hors ENT : graine = identifiant + SHA256(alea + mot de passe).upper() ;
-    /// ENT : graine = SHA256(mot de passe).upper() (identifiant et alea ignorés).
+    /// Graine = identifiant (sauf ENT) + SHA256(alea + mot de passe).upper().
     static func deriveLoginKeys(username: String,
                                 password: String,
                                 alea: String,
                                 ivTemp: Data,
                                 isENT: Bool) -> LoginKeys {
         var passwordInput = Data()
-        if !isENT {
-            passwordInput.append(binaryStringData(alea))
-        }
+        passwordInput.append(binaryStringData(alea))
         passwordInput.append(Data(password.utf8))
 
         let shaUpper = hexString(

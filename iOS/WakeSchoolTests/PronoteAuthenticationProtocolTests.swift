@@ -164,31 +164,37 @@ final class PronoteAuthenticationProtocolTests: XCTestCase {
         XCTAssertEqual(transport.requestBodies.count, 2)
     }
 
-    func testENTLoginUsesENTKeyDerivationAndThePlainChallenge() async throws {
-        let vector = try XCTUnwrap(
-            PronoteCryptoFixtures.logins.first { $0.name == "ENT" }
-        )
-        let temporaryIV = try PronoteCrypto.data(fromHex: vector.ivTempHex)
+    func testENTLoginUsesENTKeyDerivationAndPreservesPasswordCase() async throws {
+        let username = "ent-student"
+        let password = "ENT-Password"
+        let alea = "ent-alea"
+        let challenge = "ent-plain-challenge"
+        let temporaryIV = Data(repeating: 0x41, count: 16)
         let sessionIV = PronoteCrypto.md5(temporaryIV)
         let keys = PronoteCrypto.deriveLoginKeys(
-            username: vector.username,
-            password: vector.password,
-            alea: vector.alea,
+            username: username,
+            password: password,
+            alea: alea,
             ivTemp: temporaryIV,
             isENT: true
         )
         let expectedChallenge = try PronoteCrypto.aesCBCEncrypt(
-            Data(vector.challenge.utf8),
+            Data(challenge.utf8),
             key: keys.authKey,
             iv: sessionIV
         )
         let cleCipher = try PronoteCrypto.aesCBCEncrypt(
-            try PronoteCrypto.data(fromByteList: vector.cle),
+            try PronoteCrypto.data(fromByteList: "1,2,3,4"),
             key: keys.authKey,
             iv: sessionIV
         )
         let transport = AuthenticationFakeTransport(responses: [
-            try response(challenge: vector.challenge, alea: vector.alea),
+            try response(
+                challenge: challenge,
+                alea: alea,
+                modeCompLog: 1,
+                modeCompMdp: 1
+            ),
             try response(cle: PronoteCrypto.hexString(from: cleCipher))
         ])
         let (session, initial) = makeSession(
@@ -200,8 +206,8 @@ final class PronoteAuthenticationProtocolTests: XCTestCase {
         _ = try await PronoteAuthenticator(transport: transport).authenticate(
             credentials: PronoteCredentials(
                 serverURL: "https://example.test/pronote/",
-                username: vector.username,
-                password: vector.password
+                username: username,
+                password: password
             ),
             session: session,
             initial: initial,

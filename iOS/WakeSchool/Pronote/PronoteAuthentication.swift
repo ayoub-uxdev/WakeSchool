@@ -117,9 +117,16 @@ struct PronoteAuthenticator {
         let modeCompMdp = Self.int(identificationData["modeCompMdp"]) > 0
         let modeCompLog = Self.int(identificationData["modeCompLog"]) > 0
 
-        let normalizedUsername = modeCompLog ? username.lowercased() : username
+        let normalizedUsername: String
+        if modeCompLog && !options.useENT {
+            normalizedUsername = username
+                .lowercased()
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            normalizedUsername = username
+        }
         var normalizedPassword = password.trimmingCharacters(in: .whitespacesAndNewlines)
-        if modeCompMdp {
+        if modeCompMdp && !options.useENT {
             normalizedPassword = normalizedPassword.lowercased()
         }
 
