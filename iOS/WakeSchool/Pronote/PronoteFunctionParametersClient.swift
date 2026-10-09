@@ -80,13 +80,14 @@ struct PronoteFunctionParametersClient {
             "data": data,
             "donnees": data
         ]
+        let initialRequestIV = Data(repeating: 0, count: 16)
         let sessionIV = PronoteCrypto.md5(temporaryIV)
         let encodedPayload = try PronoteCodec.encodeDataSec(
             payload,
             compressed: session.requestsAreCompressed,
             encrypted: session.requestsAreEncrypted,
             key: PronoteCrypto.md5(Data()),
-            iv: sessionIV
+            iv: initialRequestIV
         )
 
         let properties = PronoteAPIProperties.forVersion(session.version)
