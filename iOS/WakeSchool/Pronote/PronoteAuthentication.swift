@@ -27,7 +27,16 @@ struct PronoteAuthenticationResult {
 enum PronoteAuthenticationError: Error, LocalizedError, Equatable {
     case invalidResponse
     case missingField(String)
-    case challengeDecryptionFailed
+    case challengeDecryptionFailed(
+        version: [Int],
+        challengeByteCount: Int,
+        aleaByteCount: Int,
+        loginWasNormalized: Bool,
+        passwordWasNormalized: Bool,
+        requestsAreEncrypted: Bool,
+        requestsAreCompressed: Bool,
+        isQRLogin: Bool
+    )
     case challengeFormatInvalid
     case missingSessionKey
     case unsupportedLogin
@@ -38,8 +47,25 @@ enum PronoteAuthenticationError: Error, LocalizedError, Equatable {
             return "Réponse d'authentification PRONOTE invalide."
         case .missingField(let field):
             return "Champ PRONOTE manquant : \(field)."
-        case .challengeDecryptionFailed:
-            return "Impossible de déchiffrer le challenge PRONOTE."
+        case .challengeDecryptionFailed(
+            let version,
+            let challengeByteCount,
+            let aleaByteCount,
+            let loginWasNormalized,
+            let passwordWasNormalized,
+            let requestsAreEncrypted,
+            let requestsAreCompressed,
+            let isQRLogin
+        ):
+            let versionText = version.map(String.init).joined(separator: ".")
+            return """
+                Impossible de déchiffrer le challenge PRONOTE. \
+                Diagnostic sans identifiants : version=\(versionText), \
+                challenge=\(challengeByteCount) octets, alea=\(aleaByteCount) octets, \
+                loginNormalisé=\(loginWasNormalized), motDePasseNormalisé=\(passwordWasNormalized), \
+                requêtesChiffrées=\(requestsAreEncrypted), \
+                requêtesCompressées=\(requestsAreCompressed), QR=\(isQRLogin).
+                """
         case .challengeFormatInvalid:
             return "Challenge PRONOTE invalide."
         case .missingSessionKey:
@@ -128,7 +154,16 @@ struct PronoteAuthenticator {
                 iv: initial.sessionIV
             )
         } catch {
-            throw PronoteAuthenticationError.challengeDecryptionFailed
+            throw PronoteAuthenticationError.challengeDecryptionFailed(
+                version: session.version,
+                challengeByteCount: challengeBytes.count,
+                aleaByteCount: PronoteCrypto.binaryStringData(alea).count,
+                loginWasNormalized: modeCompLog,
+                passwordWasNormalized: modeCompMdp,
+                requestsAreEncrypted: initial.requestsAreEncrypted,
+                requestsAreCompressed: initial.requestsAreCompressed,
+                isQRLogin: isQRLogin
+            )
         }
 
         guard let challengeText = String(data: challengePlain, encoding: .utf8) else {
