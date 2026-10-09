@@ -10,10 +10,15 @@ struct PronoteLoginView: View {
     @State private var password = ""
     @State private var accountKind: PronoteAccountKind = .student
     @State private var loginMethod: LoginMethod = .qrCode
+    @State private var credentialsMethod: CredentialsMethod = .entHDF
     @State private var isConnecting = false
     @State private var errorMessage: String?
     @State private var showingScanner = false
     @State private var scannedQRCode: String?
+    @State private var showingENTBrowser = false
+    @State private var entLoginURL: URL?
+    @State private var entMobileUUID: String?
+    @State private var entCurrentHost = ""
 
     var body: some View {
         NavigationStack {
@@ -25,6 +30,8 @@ struct PronoteLoginView: View {
                     if loginMethod == .qrCode {
                         qrSection
                         pinSection
+                    } else if credentialsMethod == .entHDF {
+                        entSection
                     } else {
                         credentialsSection
                     }
@@ -35,7 +42,7 @@ struct PronoteLoginView: View {
 
                     connectButton
 
-                    Text("Les données sensibles sont conservées uniquement dans le Keychain de cet iPhone. Pour les comptes gérés par un ENT, la connexion par QR code est recommandée.")
+                    Text(credentialStorageNote)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -50,6 +57,55 @@ struct PronoteLoginView: View {
                     showingScanner = false
                     scannedQRCode = value
                     errorMessage = nil
+                }
+            }
+        }
+        .sheet(isPresented: $showingENTBrowser) {
+            if let entLoginURL, let entMobileUUID {
+                NavigationStack {
+                    PronoteENTLoginWebView(
+                        url: entLoginURL,
+                        mobileUUID: entMobileUUID,
+                        onLogin: { username, mobileToken in
+                            showingENTBrowser = false
+                            Task {
+                                await finishENTLogin(
+                                    username: username,
+                                    mobileToken: mobileToken
+                                )
+                            }
+                        },
+                        onHostChange: { host in
+                            entCurrentHost = host
+                        },
+                        onError: { message in
+                            showingENTBrowser = false
+                            errorMessage = message
+                        }
+                    )
+                    .navigationTitle("Connexion ENT HDF")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Annuler") {
+                                showingENTBrowser = false
+                            }
+                        }
+                    }
+                    .safeAreaInset(edge: .top) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "lock.fill")
+                            Text(entCurrentHost.isEmpty ? entLoginURL.host ?? "" : entCurrentHost)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(.bar)
+                    }
                 }
             }
         }
@@ -73,14 +129,61 @@ struct PronoteLoginView: View {
             Text("Connexion à PRONOTE")
                 .font(.title.bold())
 
-            Text(
-                loginMethod == .qrCode
-                    ? "Scanne le QR code généré dans PRONOTE, puis saisis le code à 4 chiffres choisi lors de sa création."
-                    : "Saisis l’adresse du serveur et les identifiants directs de ton compte PRONOTE."
-            )
+            Text(headerDescription)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+        }
+    }
+
+    private var headerDescription: String {
+        if loginMethod == .qrCode {
+            return "Scanne le QR code généré dans PRONOTE, puis saisis le code à 4 chiffres choisi lors de sa création."
+        }
+        if credentialsMethod == .entHDF {
+            return "Connecte-toi sur la page officielle de ton établissement. WakeSchool ne lit pas et ne conserve pas ton mot de passe ENT."
+        }
+        return "Saisis l’adresse du serveur et les identifiants directs de ton compte PRONOTE."
+    }
+
+    private var credentialStorageNote: String {
+        if loginMethod == .credentials && credentialsMethod == .entHDF {
+            return "Le mot de passe ENT n’est pas enregistré. Seul le jeton de connexion PRONOTE est conservé dans le Keychain."
+        }
+        return "Les données sensibles sont conservées uniquement dans le Keychain de cet iPhone. La connexion ENT par QR code reste également disponible."
+    }
+
+    private var credentialsMethodPicker: some View {
+        Picker("Type de connexion", selection: $credentialsMethod) {
+            Text("ENT HDF").tag(CredentialsMethod.entHDF)
+            Text("PRONOTE direct").tag(CredentialsMethod.directPronote)
+        }
+        .pickerStyle(.segmented)
+    }
+
+    private var entSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Connexion sécurisée par l’ENT")
+                .font(.headline)
+
+            credentialsMethodPicker
+
+            TextField("Lien PRONOTE de l’établissement", text: $serverURL)
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .textFieldStyle(.roundedBorder)
+
+            Picker("Type de compte", selection: $accountKind) {
+                ForEach(PronoteAccountKind.allCases) { kind in
+                    Text(kind.displayName).tag(kind)
+                }
+            }
+            .pickerStyle(.menu)
+
+            Text("La page officielle s’ouvrira ici. Saisis tes identifiants ENT uniquement sur cette page ; WakeSchool ne les enregistre pas.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -88,6 +191,8 @@ struct PronoteLoginView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Connexion directe PRONOTE")
                 .font(.headline)
+
+            credentialsMethodPicker
 
             TextField("Adresse du serveur PRONOTE", text: $serverURL)
                 .keyboardType(.URL)
@@ -110,7 +215,7 @@ struct PronoteLoginView: View {
             SecureField("Mot de passe PRONOTE", text: $password)
                 .textFieldStyle(.roundedBorder)
 
-            Text("Ce mode utilise les identifiants directs du compte PRONOTE. Il ne remplace pas la connexion SSO d’un portail ENT.")
+            Text("Ce mode utilise les identifiants directs du compte PRONOTE. Les identifiants sont conservés dans le Keychain de cet iPhone.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -188,7 +293,11 @@ struct PronoteLoginView: View {
                             .fontWeight(.semibold)
                     }
                 } else {
-                    Text("Se connecter à PRONOTE")
+                    Text(
+                        loginMethod == .credentials && credentialsMethod == .entHDF
+                            ? "Continuer avec l’ENT HDF"
+                            : "Se connecter à PRONOTE"
+                    )
                         .fontWeight(.semibold)
                 }
             }
@@ -204,6 +313,9 @@ struct PronoteLoginView: View {
         case .qrCode:
             return scannedQRCode != nil && pin.count == 4
         case .credentials:
+            if credentialsMethod == .entHDF {
+                return !serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
             return !serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && !password.isEmpty
@@ -212,6 +324,21 @@ struct PronoteLoginView: View {
 
     private func connect() async {
         guard canConnect else { return }
+
+        if loginMethod == .credentials && credentialsMethod == .entHDF {
+            do {
+                let loginURL = try PronoteENTLoginWebView.loginURL(from: serverURL)
+                entLoginURL = loginURL
+                entCurrentHost = loginURL.host ?? ""
+                serverURL = loginURL.absoluteString
+                entMobileUUID = try PronoteMobileIdentity.sharedUUID()
+                errorMessage = nil
+                showingENTBrowser = true
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            return
+        }
 
         isConnecting = true
         errorMessage = nil
@@ -249,11 +376,45 @@ struct PronoteLoginView: View {
             errorMessage = error.localizedDescription
         }
     }
+
+    private func finishENTLogin(username: String, mobileToken: String) async {
+        guard let entMobileUUID else { return }
+        isConnecting = true
+        errorMessage = nil
+        defer { isConnecting = false }
+
+        do {
+            let result = try await LivePronoteClient.loginWithENTMobileToken(
+                serverURL: serverURL,
+                username: username,
+                mobileToken: mobileToken,
+                accountKind: accountKind,
+                mobileUUID: entMobileUUID
+            )
+            try CredentialsStore(store: dataStore.environmentSecrets).save(result.credentials)
+            dataStore.setDataSource(.pronote)
+            dataStore.reloadProvider()
+            await dataStore.refresh()
+
+            if let error = dataStore.errorMessage {
+                throw PronoteLoginViewError.connectionFailed(error)
+            }
+
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
 }
 
 private enum LoginMethod: Hashable {
     case qrCode
     case credentials
+}
+
+private enum CredentialsMethod: Hashable {
+    case entHDF
+    case directPronote
 }
 
 private enum PronoteLoginViewError: Error, LocalizedError {

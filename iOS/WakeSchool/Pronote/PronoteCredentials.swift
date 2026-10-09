@@ -45,8 +45,8 @@ enum PronoteAccountKind: Int, Codable, CaseIterable, Hashable, Identifiable {
 
 /// Identifiants PRONOTE conservés exclusivement dans le Keychain.
 ///
-/// Pour une connexion QR, `usesMobileToken` est vrai et `mobileUUID` contient
-/// l'identifiant stable de cette installation WakeSchool.
+/// Pour les connexions QR ou ENT, `usesMobileToken` est vrai et `mobileUUID`
+/// contient l'identifiant stable de cette installation WakeSchool.
 struct PronoteCredentials: Codable, Equatable, CustomStringConvertible {
     var serverURL: String
     var username: String

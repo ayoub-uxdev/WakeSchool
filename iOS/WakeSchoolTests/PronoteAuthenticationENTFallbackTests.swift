@@ -2,6 +2,63 @@ import XCTest
 @testable import WakeSchool
 
 final class PronoteAuthenticationENTFallbackTests: XCTestCase {
+    func testMobileTokenAuthenticationUsesExistingTokenFlow() async throws {
+        let vector = try XCTUnwrap(
+            PronoteCryptoFixtures.logins.first { $0.name == "standard" }
+        )
+        let temporaryIV = try PronoteCrypto.data(fromHex: vector.ivTempHex)
+        let sessionIV = PronoteCrypto.md5(temporaryIV)
+        let transport = AuthenticationFakeTransport(responses: [
+            try response(
+                challenge: vector.challengeCipherHex,
+                alea: vector.alea,
+                modeCompLog: 0
+            ),
+            try response(cle: vector.cleCipherHex)
+        ])
+        let authenticator = PronoteAuthenticator(transport: transport)
+        let session = PronoteSessionParameters(
+            rootURL: URL(string: "https://example.test/pronote/")!,
+            sessionID: "42",
+            spaceID: 3,
+            skipRequestEncryption: true,
+            skipRequestCompression: true,
+            version: [2026, 2, 7]
+        )
+        let initial = PronoteInitialSession(
+            sessionID: "42",
+            spaceID: 3,
+            requestNumber: 3,
+            temporaryIV: temporaryIV,
+            sessionIV: sessionIV,
+            requestsAreEncrypted: false,
+            requestsAreCompressed: false
+        )
+
+        _ = try await authenticator.authenticate(
+            credentials: PronoteCredentials(
+                serverURL: "https://example.test/pronote/",
+                username: vector.username,
+                password: vector.password,
+                usesMobileToken: true,
+                mobileUUID: "device-uuid"
+            ),
+            session: session,
+            initial: initial,
+            options: PronoteLoginOptions(
+                mobileUUID: "device-uuid",
+                clientIdentifier: "device-uuid",
+                mobileToken: vector.password
+            )
+        )
+
+        let data = try XCTUnwrap(identificationData(transport.requestBodies[0]))
+        XCTAssertEqual(data["enConnexionAppliMobile"] as? Bool, true)
+        XCTAssertEqual(data["demandeConnexionAppliMobileJeton"] as? Bool, false)
+        XCTAssertEqual(data["uuidAppliMobile"] as? String, "device-uuid")
+        XCTAssertEqual(data["loginTokenSAV"] as? String, vector.password)
+    }
+
     func testQRRetriesIdentificationUsingENTChallengeDerivation() async throws {
         let vector = try XCTUnwrap(
             PronoteCryptoFixtures.logins.first { $0.name == "ENT" }
@@ -77,12 +134,16 @@ final class PronoteAuthenticationENTFallbackTests: XCTestCase {
     }
 
     private func identificationENTFlag(_ requestBody: Data) -> Bool? {
+        identificationData(requestBody)?["pourENT"] as? Bool
+    }
+
+    private func identificationData(_ requestBody: Data) -> [String: Any]? {
         guard let body = try? JSONSerialization.jsonObject(with: requestBody) as? [String: Any],
               let dataSec = body["dataSec"] as? [String: Any],
               let data = dataSec["data"] as? [String: Any] else {
             return nil
         }
-        return data["pourENT"] as? Bool
+        return data
     }
 }
 

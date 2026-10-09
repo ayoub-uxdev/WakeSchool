@@ -124,6 +124,52 @@ final class LivePronoteClient: PronoteClient {
         )
     }
 
+    /// Exchanges the mobile token exposed by PRONOTE after an ENT web login.
+    static func loginWithENTMobileToken(
+        serverURL: String,
+        username: String,
+        mobileToken: String,
+        accountKind: PronoteAccountKind,
+        mobileUUID: String
+    ) async throws -> PronoteQRLoginResult {
+        let normalizedUsername = username.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !normalizedUsername.isEmpty,
+              !mobileToken.isEmpty else {
+            throw PronoteLiveError.invalidMobileTokenCredentials
+        }
+
+        var credentials = PronoteCredentials(
+            serverURL: serverURL,
+            username: normalizedUsername,
+            password: mobileToken,
+            accountKind: accountKind,
+            usesMobileToken: true,
+            mobileUUID: mobileUUID
+        )
+        let client = LivePronoteClient(
+            credentials: credentials,
+            options: PronoteLoginOptions(
+                mobileUUID: mobileUUID,
+                clientIdentifier: mobileUUID,
+                mobileToken: mobileToken
+            )
+        )
+
+        let profile = try await client.profile()
+        if let refreshedToken = try await client.refreshedMobileToken(),
+           !refreshedToken.isEmpty {
+            credentials.password = refreshedToken
+        }
+
+        return PronoteQRLoginResult(
+            credentials: credentials,
+            displayName: profile.displayName
+        )
+    }
+
     // MARK: - Timetable
 
     func getTimetable() async throws -> [TimetableEntry] {
@@ -451,6 +497,7 @@ enum PronoteLiveError: Error, LocalizedError, Equatable {
 
     case missingResource
     case randomGenerationFailed
+    case invalidMobileTokenCredentials
 
     var errorDescription: String? {
 
@@ -461,6 +508,9 @@ enum PronoteLiveError: Error, LocalizedError, Equatable {
 
         case .randomGenerationFailed:
             return "Impossible de générer l'IV temporaire PRONOTE."
+
+        case .invalidMobileTokenCredentials:
+            return "La session ENT n'a pas fourni un identifiant et un jeton PRONOTE valides."
         }
     }
 }
