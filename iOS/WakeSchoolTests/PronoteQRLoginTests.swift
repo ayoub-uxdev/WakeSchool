@@ -34,7 +34,7 @@ final class PronoteQRLoginTests: XCTestCase {
             loginBytes
         )
         XCTAssertEqual(
-            Data(credentials.password.utf8),
+            PronoteCrypto.binaryStringData(credentials.password),
             tokenBytes
         )
     }
