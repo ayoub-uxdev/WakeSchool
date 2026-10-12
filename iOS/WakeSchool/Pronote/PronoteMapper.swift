@@ -195,7 +195,7 @@ enum PronoteMapper {
             var seen = Set<UUID>()
 
             for item in items {
-                guard let grade = protocolGrade(item) else {
+                guard let grade = protocolGrade(from: item) else {
                     let reason = protocolGradeRejection(for: item)
                     rejected[reason.rawValue, default: 0] += 1
                     continue
