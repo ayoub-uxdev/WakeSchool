@@ -1,7 +1,7 @@
 import Foundation
 import Security
 
-final class LivePronoteClient: PronoteClient {
+final class LivePronoteClient: PronoteClient, PronoteDataDiagnosticsReporting {
 
     private let credentials: PronoteCredentials
     private let options: PronoteLoginOptions
@@ -12,6 +12,9 @@ final class LivePronoteClient: PronoteClient {
     private var resource: [String: Any]?
     private var periods: [[String: Any]] = []
     private var schoolYearStart: Date?
+    private var schoolDayEndTimes: [[String: Any]] = []
+    private var functionOptionsErrorCode: String?
+    private(set) var dataDiagnostics = PronoteSyncDiagnostics()
 
     init(
         credentials: PronoteCredentials,
@@ -202,7 +205,16 @@ final class LivePronoteClient: PronoteClient {
     // MARK: - Timetable
 
     func getTimetable() async throws -> [TimetableEntry] {
+        dataDiagnostics.timetable = PronoteDatasetDiagnostics(callStatus: .failed)
+        do {
+            return try await fetchTimetable()
+        } catch {
+            recordDatasetFailure(.timetable, error: error, fallbackStage: "PageEmploiDuTemps")
+            throw error
+        }
+    }
 
+    private func fetchTimetable() async throws -> [TimetableEntry] {
         let client = try await connectedClient()
 
         let resource = try await loadResource(
@@ -211,21 +223,17 @@ final class LivePronoteClient: PronoteClient {
 
         let calendar = Calendar.current
 
-        let currentYear =
-            calendar.component(
-                .year,
-                from: Date()
-            )
-
-        let start =
-            schoolYearStart
-            ?? calendar.date(
-                from: DateComponents(
-                    year: currentYear,
-                    month: 9,
-                    day: 1
-                )
-            )!
+        guard let start = schoolYearStart else {
+            let error = PronoteLiveError.missingSchoolPeriodAnchor
+            let stage = functionOptionsErrorCode == nil
+                ? "FonctionParametres.General.PremierLundi"
+                : "FonctionParametres.dataSec"
+            dataDiagnostics.recordFailure(error, stage: stage)
+            if let functionOptionsErrorCode {
+                dataDiagnostics.errorCode = functionOptionsErrorCode
+            }
+            throw error
+        }
 
         let today =
             calendar.startOfDay(
@@ -246,30 +254,44 @@ final class LivePronoteClient: PronoteClient {
             )
 
         var entries: [TimetableEntry] = []
+        var rawCount = 0
 
         for week in currentWeek...(currentWeek + 2) {
 
-            let response =
-                try await client.timetable(
+            let response = try await client.timetable(
                     weekNumber: week,
                     resource: resource
                 )
-
-            entries.append(
-                contentsOf:
-                    PronoteMapper.timetable(
-                        from: response
-                    )
-            )
+            rawCount += PronoteMapper.rawTimetableCount(from: response)
+            entries.append(contentsOf: PronoteMapper.timetable(
+                from: response,
+                schoolDayEndTimes: schoolDayEndTimes
+            ))
+                dataDiagnostics.timetable.rawCount = rawCount
+                dataDiagnostics.timetable.convertedCount = deduplicate(entries).count
         }
 
-        return deduplicate(entries)
+        let result = deduplicate(entries)
+        dataDiagnostics.timetable.callStatus = .succeeded
+        dataDiagnostics.timetable.rawCount = rawCount
+        dataDiagnostics.timetable.convertedCount = result.count
+        dataDiagnostics.schoolPeriodIdentified = !periods.isEmpty && schoolYearStart != nil
+        return result
     }
 
     // MARK: - Homework
 
     func getHomework() async throws -> [Homework] {
+        dataDiagnostics.homework = PronoteDatasetDiagnostics(callStatus: .failed)
+        do {
+            return try await fetchHomework()
+        } catch {
+            recordDatasetFailure(.homework, error: error, fallbackStage: "PageCahierDeTexte")
+            throw error
+        }
+    }
 
+    private func fetchHomework() async throws -> [Homework] {
         let client =
             try await connectedClient()
 
@@ -292,51 +314,85 @@ final class LivePronoteClient: PronoteClient {
                 to: start
             ) ?? start
 
-        let response =
-            try await client.homework(
-                from: start,
-                to: end,
-                resource: resource
-            )
-
-        return PronoteMapper.homework(
-            from: response
+        guard let schoolYearStart else {
+            let error = PronoteLiveError.missingSchoolPeriodAnchor
+            let stage = functionOptionsErrorCode == nil
+                ? "FonctionParametres.General.PremierLundi"
+                : "FonctionParametres.dataSec"
+            dataDiagnostics.recordFailure(error, stage: stage)
+            if let functionOptionsErrorCode {
+                dataDiagnostics.errorCode = functionOptionsErrorCode
+            }
+            throw error
+        }
+        let weekRange = schoolWeek(for: start, anchor: schoolYearStart)
+            ...schoolWeek(for: end, anchor: schoolYearStart)
+        let response = try await client.homework(
+            resource: resource,
+            weekRange: weekRange
         )
+
+        let result = PronoteMapper.homework(from: response)
+        dataDiagnostics.homework.callStatus = .succeeded
+        dataDiagnostics.homework.rawCount = PronoteMapper.rawHomeworkCount(from: response)
+        dataDiagnostics.homework.convertedCount = result.count
+        return result
     }
 
     // MARK: - Grades
 
     func getGrades() async throws -> [Grade] {
+        dataDiagnostics.grades = PronoteDatasetDiagnostics(callStatus: .failed)
+        do {
+            return try await fetchGrades()
+        } catch {
+            recordDatasetFailure(.grades, error: error, fallbackStage: "DernieresNotes")
+            throw error
+        }
+    }
 
+    private func fetchGrades() async throws -> [Grade] {
         let client =
             try await connectedClient()
 
-        _ = try await loadResource(
+        let resource = try await loadResource(
             client
         )
 
         guard !periods.isEmpty else {
-            return []
+            let error = PronoteLiveError.missingSchoolPeriods
+            dataDiagnostics.schoolPeriodIdentified = false
+            let stage = functionOptionsErrorCode == nil
+                ? "FonctionParametres.General.ListePeriodes"
+                : "FonctionParametres.dataSec"
+            dataDiagnostics.recordFailure(error, stage: stage)
+            if let functionOptionsErrorCode {
+                dataDiagnostics.errorCode = functionOptionsErrorCode
+            }
+            throw error
         }
 
         var grades: [Grade] = []
+        var rawCount = 0
 
         for period in periods {
 
             let response =
                 try await client.grades(
-                    period: period
+                    period: period,
+                    resource: resource
                 )
 
-            grades.append(
-                contentsOf:
-                    PronoteMapper.grades(
-                        from: response
-                    )
-            )
+            rawCount += PronoteMapper.rawGradesCount(from: response)
+            grades.append(contentsOf: PronoteMapper.grades(from: response))
         }
 
-        return deduplicate(grades)
+        let result = deduplicate(grades)
+        dataDiagnostics.grades.callStatus = .succeeded
+        dataDiagnostics.grades.rawCount = rawCount
+        dataDiagnostics.grades.convertedCount = result.count
+        dataDiagnostics.schoolPeriodIdentified = true
+        return result
     }
 
     // MARK: - Profile
@@ -375,11 +431,17 @@ final class LivePronoteClient: PronoteClient {
             return sessionClient
         }
 
-        let sessionParameters = try await diagnoseAutomaticReconnection {
-            try await transport.bootstrap(
-                serverURL: credentials.serverURL,
-                accountKind: credentials.accountKind
-            )
+        let sessionParameters: PronoteSessionParameters
+        do {
+            sessionParameters = try await diagnoseAutomaticReconnection {
+                try await transport.bootstrap(
+                    serverURL: credentials.serverURL,
+                    accountKind: credentials.accountKind
+                )
+            }
+        } catch {
+            dataDiagnostics.recordFailure(error, stage: "Bootstrap PRONOTE")
+            throw error
         }
 
         let functionClient =
@@ -406,12 +468,18 @@ final class LivePronoteClient: PronoteClient {
             throw PronoteLiveError.randomGenerationFailed
         }
 
-        let initial = try await diagnoseAutomaticReconnection {
-            try await functionClient.start(
-                session: sessionParameters,
-                clientIdentifier: options.clientIdentifier,
-                temporaryIV: temporaryIV
-            )
+        let initial: PronoteInitialSession
+        do {
+            initial = try await diagnoseAutomaticReconnection {
+                try await functionClient.start(
+                    session: sessionParameters,
+                    clientIdentifier: options.clientIdentifier,
+                    temporaryIV: temporaryIV
+                )
+            }
+        } catch {
+            dataDiagnostics.recordFailure(error, stage: "FonctionParametres")
+            throw error
         }
 
         let authenticator =
@@ -420,12 +488,15 @@ final class LivePronoteClient: PronoteClient {
             )
 
         let authentication =
-            try await authenticator.authenticate(
-                credentials: credentials,
-                session: sessionParameters,
-                initial: initial,
-                options: options
-            )
+            try await diagnoseAuthentication {
+                try await authenticator.authenticate(
+                    credentials: credentials,
+                    session: sessionParameters,
+                    initial: initial,
+                    options: options
+                )
+            }
+        dataDiagnostics.authenticationSucceeded = true
 
         if credentials.usesMobileToken,
            let refreshedToken = authentication.mobileToken,
@@ -442,6 +513,12 @@ final class LivePronoteClient: PronoteClient {
                 session: authentication
             )
 
+        schoolYearStart = initial.schoolYearStart
+        periods = initial.schoolPeriods
+        schoolDayEndTimes = initial.schoolDayEndTimes
+        functionOptionsErrorCode = initial.functionOptionsErrorCode
+        dataDiagnostics.authenticationSucceeded = true
+        dataDiagnostics.schoolPeriodIdentified = !periods.isEmpty && schoolYearStart != nil
         sessionClient = client
 
         return client
@@ -471,26 +548,27 @@ final class LivePronoteClient: PronoteClient {
         _ client: PronoteSessionClient
     ) async throws -> Any {
 
-        let response =
-            try await client.userParameters()
-
-        resource =
-            PronoteMapper.resource(
-                from: response
-            ) ?? resource
-
-        periods =
-            PronoteMapper.periods(
-                from: response
-            )
-
-        if schoolYearStart == nil {
-
-            schoolYearStart =
-                PronoteMapper.schoolYearStart(
-                    from: response
-                )
+        let response: Any
+        do {
+            response = try await client.userParameters()
+        } catch {
+            dataDiagnostics.userParametersRetrieved = false
+            dataDiagnostics.recordFailure(error, stage: "ParametresUtilisateur")
+            throw error
         }
+
+        resource = PronoteMapper.studentResource(
+            from: response,
+            accountKind: credentials.accountKind
+        ) ?? resource
+
+        if periods.isEmpty {
+            periods = PronoteMapper.periods(from: response)
+        }
+
+        dataDiagnostics.userParametersRetrieved = true
+        dataDiagnostics.studentResourceIdentified = resource?["N"] != nil
+        dataDiagnostics.schoolPeriodIdentified = !periods.isEmpty && schoolYearStart != nil
 
         return response
     }
@@ -509,11 +587,79 @@ final class LivePronoteClient: PronoteClient {
             client
         )
 
-        guard let resource else {
-            throw PronoteLiveError.missingResource
+        guard let resource, resource["N"] != nil else {
+            dataDiagnostics.studentResourceIdentified = false
+            let error = PronoteLiveError.missingResource
+            dataDiagnostics.recordFailure(error, stage: "ParametresUtilisateur.ressource")
+            throw error
         }
 
         return resource
+    }
+
+    private enum Dataset {
+        case timetable
+        case homework
+        case grades
+    }
+
+    private func recordDatasetFailure(
+        _ dataset: Dataset,
+        error: Error,
+        fallbackStage: String
+    ) {
+        if dataDiagnostics.errorStage == nil {
+            dataDiagnostics.recordFailure(error, stage: fallbackStage)
+        }
+        let stage = dataDiagnostics.errorStage ?? fallbackStage
+        let code = dataDiagnostics.errorCode ?? String(describing: type(of: error))
+        switch dataset {
+        case .timetable:
+            dataDiagnostics.timetable.callStatus = .failed
+            dataDiagnostics.timetable.errorStage = stage
+            dataDiagnostics.timetable.errorCode = code
+        case .homework:
+            dataDiagnostics.homework.callStatus = .failed
+            dataDiagnostics.homework.errorStage = stage
+            dataDiagnostics.homework.errorCode = code
+        case .grades:
+            dataDiagnostics.grades.callStatus = .failed
+            dataDiagnostics.grades.errorStage = stage
+            dataDiagnostics.grades.errorCode = code
+        }
+    }
+
+    private func diagnoseAuthentication<T>(
+        _ operation: () async throws -> T
+    ) async throws -> T {
+        do {
+            return try await operation()
+        } catch {
+            let stage: String
+            if let diagnostic = error as? PronoteLoginDiagnosticError {
+                stage = diagnostic.operation?.label ?? diagnostic.stage.label
+            } else {
+                stage = "Authentification PRONOTE"
+            }
+            dataDiagnostics.authenticationSucceeded = false
+            dataDiagnostics.recordFailure(error, stage: stage)
+            throw error
+        }
+    }
+
+    private func schoolWeek(for date: Date, anchor: Date) -> Int {
+        let calendar = Calendar.current
+        let firstDay = calendar.startOfDay(for: anchor)
+        let targetDay = calendar.startOfDay(for: date)
+        let days = calendar.dateComponents([.day], from: firstDay, to: targetDay).day ?? 0
+        return max(1, 1 + days / 7)
+    }
+
+    func resetDataDiagnostics() {
+        var fresh = PronoteSyncDiagnostics()
+        fresh.authenticationSucceeded = sessionClient != nil
+        fresh.schoolPeriodIdentified = !periods.isEmpty && schoolYearStart != nil
+        dataDiagnostics = fresh
     }
 
     // MARK: - Deduplication
@@ -554,6 +700,8 @@ final class LivePronoteClient: PronoteClient {
 enum PronoteLiveError: Error, LocalizedError, Equatable {
 
     case missingResource
+    case missingSchoolPeriodAnchor
+    case missingSchoolPeriods
     case randomGenerationFailed
     case invalidMobileTokenCredentials
 
@@ -563,6 +711,12 @@ enum PronoteLiveError: Error, LocalizedError, Equatable {
 
         case .missingResource:
             return "PRONOTE n'a pas fourni la ressource élève nécessaire pour récupérer les données."
+
+        case .missingSchoolPeriodAnchor:
+            return "Les paramètres PRONOTE ne contiennent pas le lundi de référence de l'année scolaire."
+
+        case .missingSchoolPeriods:
+            return "Les paramètres PRONOTE ne contiennent aucune période scolaire."
 
         case .randomGenerationFailed:
             return "Impossible de générer l'IV temporaire PRONOTE."

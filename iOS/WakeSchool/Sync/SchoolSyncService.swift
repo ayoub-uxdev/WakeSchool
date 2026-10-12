@@ -8,6 +8,7 @@ final class SchoolSyncService {
     private let repository: SchoolRepository
     private let preferences: PreferencesStore
     private let now: () -> Date
+    private(set) var diagnostics: PronoteSyncDiagnostics?
 
     init(provider: SchoolDataProvider,
          repository: SchoolRepository,
@@ -27,9 +28,44 @@ final class SchoolSyncService {
     /// Récupère les données, les persiste, puis renvoie l'état local à jour.
     @discardableResult
     func sync() async throws -> SchoolSnapshot {
-        let fresh = try await provider.snapshot()
-        try repository.save(fresh)
+        let diagnosticProvider = provider as? SchoolSyncDiagnosticsReporting
+        diagnosticProvider?.resetDataDiagnostics()
+
+        let fresh: SchoolSnapshot
+        do {
+            fresh = try await provider.snapshot()
+        } catch {
+            var result = diagnosticProvider?.dataDiagnostics
+            if result?.errorStage == nil {
+                result?.recordFailure(error, stage: "SchoolDataProvider.snapshot")
+            }
+            diagnostics = result
+            throw error
+        }
+
+        do {
+            try repository.save(fresh)
+        } catch {
+            var result = diagnosticProvider?.dataDiagnostics
+            result?.recordFailure(error, stage: "SwiftData.save")
+            diagnostics = result
+            throw error
+        }
+
+        let saved: SchoolSnapshot
+        do {
+            saved = try repository.loadSnapshot()
+        } catch {
+            var result = diagnosticProvider?.dataDiagnostics
+            result?.recordFailure(error, stage: "SwiftData.loadSnapshot")
+            diagnostics = result
+            throw error
+        }
+
+        var result = diagnosticProvider?.dataDiagnostics
+        result?.recordPersistedSnapshot(saved)
+        diagnostics = result
         preferences.lastSyncDate = now()
-        return try repository.loadSnapshot()
+        return saved
     }
 }

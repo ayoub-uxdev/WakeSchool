@@ -63,10 +63,36 @@ final class PronoteFunctionParametersClientTests: XCTestCase {
             key: key,
             iv: PronoteCrypto.md5(temporaryIV)
         )
+        let functionOptions: [String: Any] = [
+            "data": [
+                "General": [
+                    "PremierLundi": ["V": "07/09/2026"],
+                    "ListePeriodes": [
+                        ["N": "period-1", "L": "Période 1"]
+                    ],
+                    "ListeHeuresFin": [
+                        "V": [
+                            ["G": 0, "L": "08h00"],
+                            ["G": 1, "L": "09h00"]
+                        ]
+                    ]
+                ]
+            ]
+        ]
+        let encodedFunctionOptions = try PronoteCodec.encodeDataSec(
+            functionOptions,
+            compressed: true,
+            encrypted: true,
+            key: key,
+            iv: PronoteCrypto.md5(temporaryIV)
+        )
+        guard case .encodedHex(let functionOptionsHex) = encodedFunctionOptions else {
+            return XCTFail("Les paramètres FonctionParametres auraient dû être encodés.")
+        }
         let transport = FunctionParametersFakeTransport(
             response: [
                 "no": PronoteCodec.hex(responseOrder),
-                "dataSec": "present"
+                "dataSec": functionOptionsHex
             ]
         )
         let session = PronoteSessionParameters(
@@ -78,10 +104,17 @@ final class PronoteFunctionParametersClientTests: XCTestCase {
         )
         let client = PronoteFunctionParametersClient(transport: transport)
 
-        _ = try await client.start(
+        let initial = try await client.start(
             session: session,
             clientIdentifier: "device-id",
             temporaryIV: temporaryIV
+        )
+        XCTAssertEqual(initial.schoolPeriods.count, 1)
+        XCTAssertEqual(initial.schoolPeriods.first?["N"] as? String, "period-1")
+        XCTAssertEqual(initial.schoolDayEndTimes.count, 2)
+        XCTAssertEqual(
+            Calendar.current.component(.day, from: try XCTUnwrap(initial.schoolYearStart)),
+            7
         )
 
         let body = try XCTUnwrap(
@@ -103,6 +136,37 @@ final class PronoteFunctionParametersClientTests: XCTestCase {
             temporaryIV.base64EncodedString()
         )
         XCTAssertEqual(requestData["identifiantNav"] as? String, "device-id")
+    }
+
+    func testMalformedFunctionOptionsAreRecordedWithoutStoppingSessionSetup() async throws {
+        let temporaryIV = Data(repeating: 0xA7, count: 16)
+        let responseOrder = try PronoteCrypto.aesCBCEncrypt(
+            Data("2".utf8),
+            key: PronoteCrypto.md5(Data()),
+            iv: PronoteCrypto.md5(temporaryIV)
+        )
+        let transport = FunctionParametersFakeTransport(
+            response: [
+                "no": PronoteCodec.hex(responseOrder),
+                "dataSec": "invalid"
+            ]
+        )
+        let session = PronoteSessionParameters(
+            rootURL: URL(string: "https://example.com/pronote/")!,
+            sessionID: "2052117",
+            spaceID: 3,
+            skipRequestEncryption: false,
+            skipRequestCompression: true
+        )
+
+        let initial = try await PronoteFunctionParametersClient(transport: transport).start(
+            session: session,
+            temporaryIV: temporaryIV
+        )
+
+        XCTAssertNil(initial.schoolYearStart)
+        XCTAssertTrue(initial.schoolPeriods.isEmpty)
+        XCTAssertEqual(initial.functionOptionsErrorCode, "FUNCTION_OPTIONS_INVALID_HEX")
     }
 }
 

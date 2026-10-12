@@ -10,6 +10,7 @@ final class SchoolDataStore: ObservableObject {
     @Published private(set) var isSyncing = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var lastSync: Date?
+    @Published private(set) var syncDiagnostics: PronoteSyncDiagnostics?
 
     private let environment: AppEnvironment
     private var hasStarted = false
@@ -45,6 +46,7 @@ final class SchoolDataStore: ObservableObject {
 
         do {
             snapshot = try environment.sync.loadCached()
+            syncDiagnostics?.recordPersistedSnapshot(snapshot)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -69,9 +71,12 @@ final class SchoolDataStore: ObservableObject {
 
         do {
             snapshot = try await environment.sync.sync()
+            syncDiagnostics = environment.sync.diagnostics
             lastSync = environment.preferences.lastSyncDate
             errorMessage = nil
         } catch {
+            syncDiagnostics = environment.sync.diagnostics
+            syncDiagnostics?.recordPersistedSnapshot(snapshot)
             errorMessage = error.localizedDescription
         }
     }

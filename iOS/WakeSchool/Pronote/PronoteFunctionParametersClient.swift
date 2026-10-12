@@ -1,6 +1,6 @@
 import Foundation
 
-struct PronoteInitialSession: Equatable {
+struct PronoteInitialSession {
     let sessionID: String
     let spaceID: Int
     let requestNumber: Int
@@ -8,6 +8,36 @@ struct PronoteInitialSession: Equatable {
     let sessionIV: Data
     let requestsAreEncrypted: Bool
     let requestsAreCompressed: Bool
+    let schoolYearStart: Date?
+    let schoolPeriods: [[String: Any]]
+    let schoolDayEndTimes: [[String: Any]]
+    let functionOptionsErrorCode: String?
+
+    init(
+        sessionID: String,
+        spaceID: Int,
+        requestNumber: Int,
+        temporaryIV: Data,
+        sessionIV: Data,
+        requestsAreEncrypted: Bool,
+        requestsAreCompressed: Bool,
+        schoolYearStart: Date? = nil,
+        schoolPeriods: [[String: Any]] = [],
+        schoolDayEndTimes: [[String: Any]] = [],
+        functionOptionsErrorCode: String? = nil
+    ) {
+        self.sessionID = sessionID
+        self.spaceID = spaceID
+        self.requestNumber = requestNumber
+        self.temporaryIV = temporaryIV
+        self.sessionIV = sessionIV
+        self.requestsAreEncrypted = requestsAreEncrypted
+        self.requestsAreCompressed = requestsAreCompressed
+        self.schoolYearStart = schoolYearStart
+        self.schoolPeriods = schoolPeriods
+        self.schoolDayEndTimes = schoolDayEndTimes
+        self.functionOptionsErrorCode = functionOptionsErrorCode
+    }
 }
 
 enum PronoteFunctionParametersError: Error, Equatable, LocalizedError {
@@ -136,11 +166,45 @@ struct PronoteFunctionParametersClient {
             throw PronoteFunctionParametersError.unexpectedResponseNumber
         }
 
-        guard response[properties.secureData] != nil
-            || response["dataSec"] != nil
-            || response["donneesSec"] != nil else {
+        guard let secureData = response[properties.secureData]
+            ?? response["dataSec"]
+            ?? response["donneesSec"] else {
             throw PronoteFunctionParametersError.missingData
         }
+
+        let functionData: [String: Any]
+        var functionOptionsErrorCode: String?
+        if let object = secureData as? [String: Any] {
+            functionData = object
+        } else if let encoded = secureData as? String {
+            do {
+                let decoded = try PronoteCodec.decodeDataSec(
+                    encoded,
+                    compressed: session.requestsAreCompressed,
+                    encrypted: session.requestsAreEncrypted,
+                    key: PronoteCrypto.md5(Data()),
+                    iv: sessionIV
+                )
+                if let object = decoded as? [String: Any] {
+                    functionData = object
+                } else {
+                    functionData = [:]
+                    functionOptionsErrorCode = "FUNCTION_OPTIONS_NOT_OBJECT"
+                }
+            } catch {
+                functionData = [:]
+                functionOptionsErrorCode = Self.functionOptionsDecodeErrorCode(for: error)
+            }
+        } else {
+            functionData = [:]
+            functionOptionsErrorCode = "FUNCTION_OPTIONS_INVALID_FORMAT"
+        }
+        let data = functionData["data"] as? [String: Any]
+            ?? functionData["donnees"] as? [String: Any]
+            ?? functionData
+        let schoolYearStart = PronoteMapper.schoolYearStart(from: data)
+        let schoolPeriods = PronoteMapper.periods(from: functionData)
+        let schoolDayEndTimes = Self.listValue(in: data, key: "ListeHeuresFin")
 
         return PronoteInitialSession(
             sessionID: session.sessionID,
@@ -149,8 +213,45 @@ struct PronoteFunctionParametersClient {
             temporaryIV: temporaryIV,
             sessionIV: sessionIV,
             requestsAreEncrypted: session.requestsAreEncrypted,
-            requestsAreCompressed: session.requestsAreCompressed
+            requestsAreCompressed: session.requestsAreCompressed,
+            schoolYearStart: schoolYearStart,
+            schoolPeriods: schoolPeriods,
+            schoolDayEndTimes: schoolDayEndTimes,
+            functionOptionsErrorCode: functionOptionsErrorCode
         )
+    }
+
+    private static func listValue(in data: [String: Any], key: String) -> [[String: Any]] {
+        guard let general = data["General"] as? [String: Any]
+                ?? data["general"] as? [String: Any],
+              let value = general[key] as? [String: Any] else {
+            return []
+        }
+        return value["V"] as? [[String: Any]] ?? []
+    }
+
+    private static func functionOptionsDecodeErrorCode(for error: Error) -> String {
+        if let error = error as? PronoteCodecError {
+            switch error {
+            case .invalidJSON:
+                return "FUNCTION_OPTIONS_INVALID_JSON"
+            case .compressionFailed:
+                return "FUNCTION_OPTIONS_COMPRESSION_FAILED"
+            case .decompressionFailed:
+                return "FUNCTION_OPTIONS_DECOMPRESSION_FAILED"
+            case .invalidHex:
+                return "FUNCTION_OPTIONS_INVALID_HEX"
+            }
+        }
+        if let error = error as? PronoteCryptoError {
+            switch error {
+            case .invalidHex:
+                return "FUNCTION_OPTIONS_INVALID_HEX"
+            default:
+                return "FUNCTION_OPTIONS_DECODE_FAILED"
+            }
+        }
+        return "FUNCTION_OPTIONS_DECODE_FAILED"
     }
 
     private func makeInitialOrder() throws -> String {

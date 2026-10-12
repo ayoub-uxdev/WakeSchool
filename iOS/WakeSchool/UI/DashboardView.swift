@@ -14,7 +14,13 @@ struct DashboardView: View {
                 ScrollView {
                     VStack(spacing: 22) {
                         header(now: context.date)
-                        if store.errorMessage != nil { offlineBanner }
+                        if let errorMessage = store.errorMessage {
+                            offlineBanner(errorMessage)
+                        }
+                        if store.dataSource == .pronote,
+                           let diagnostics = store.syncDiagnostics {
+                            diagnosticsCard(diagnostics)
+                        }
                         insightsCard(summary)
                         courseHero(summary)
                         wakeCard(summary)
@@ -76,12 +82,74 @@ struct DashboardView: View {
         }
     }
 
-    private var offlineBanner: some View {
-        Label("Synchronisation impossible. Les données locales sont affichées.",
-              systemImage: "wifi.slash")
-            .font(.footnote.weight(.medium))
-            .foregroundStyle(Color.orange)
-            .wakeCard(padding: 12)
+    private func offlineBanner(_ message: String) -> some View {
+        Label {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Synchronisation impossible. Les données locales sont affichées.")
+                    .fontWeight(.semibold)
+                Text(message)
+                    .font(.caption)
+                    .textSelection(.enabled)
+            }
+        } icon: {
+            Image(systemName: "wifi.slash")
+        }
+        .font(.footnote)
+        .foregroundStyle(Color.orange)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .wakeCard(padding: 12)
+    }
+
+    private func diagnosticsCard(_ diagnostics: PronoteSyncDiagnostics) -> some View {
+        DisclosureGroup("Diagnostic temporaire PRONOTE") {
+            VStack(alignment: .leading, spacing: 8) {
+                diagnosticLine("Authentification réussie", value: yesNo(diagnostics.authenticationSucceeded))
+                diagnosticLine("Paramètres utilisateur récupérés", value: yesNo(diagnostics.userParametersRetrieved))
+                diagnosticLine("Ressource élève identifiée", value: yesNo(diagnostics.studentResourceIdentified))
+                diagnosticLine("Période scolaire identifiée", value: yesNo(diagnostics.schoolPeriodIdentified))
+                datasetLines("Cours", diagnostics.timetable)
+                datasetLines("Devoirs", diagnostics.homework)
+                datasetLines("Notes", diagnostics.grades)
+                if let stage = diagnostics.errorStage,
+                   let code = diagnostics.errorCode {
+                    diagnosticLine("Erreur", value: "\(stage) · \(code)")
+                        .foregroundStyle(.orange)
+                }
+            }
+            .font(.caption.monospaced())
+            .padding(.top, 8)
+        }
+        .font(.footnote.weight(.semibold))
+        .tint(WakeTheme.accent)
+        .wakeCard(padding: 12)
+    }
+
+    private func datasetLines(_ title: String, _ data: PronoteDatasetDiagnostics) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            diagnosticLine("Appel \(title.lowercased())", value: data.callStatus.rawValue)
+            diagnosticLine("\(title) bruts / convertis", value: "\(data.rawCount) / \(data.convertedCount)")
+            diagnosticLine("\(title) enregistrés / affichés", value: "\(data.savedCount) / \(data.displayedCount)")
+            if let stage = data.errorStage,
+               let code = data.errorCode {
+                diagnosticLine("Erreur \(title.lowercased())", value: "\(stage) · \(code)")
+                    .foregroundStyle(.orange)
+            }
+        }
+        .padding(.top, 3)
+    }
+
+    private func diagnosticLine(_ label: String, value: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(label)
+            Spacer(minLength: 8)
+            Text(value)
+                .multilineTextAlignment(.trailing)
+                .textSelection(.enabled)
+        }
+    }
+
+    private func yesNo(_ value: Bool) -> String {
+        value ? "oui" : "non"
     }
 
     // MARK: - Résumé intelligent

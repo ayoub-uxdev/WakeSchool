@@ -80,7 +80,16 @@ enum PronoteJSON {
 
     // MARK: - Primitive values
 
+    private static func wrappedValue(_ value: Any?) -> Any? {
+        guard let dictionary = value as? [String: Any],
+              let wrapped = dictionary["V"] else {
+            return value
+        }
+        return wrappedValue(wrapped)
+    }
+
     static func string(_ value: Any?) -> String? {
+        let value = wrappedValue(value)
         switch value {
         case let value as String:
             return value
@@ -97,6 +106,7 @@ enum PronoteJSON {
     }
 
     static func number(_ value: Any?) -> Double? {
+        let value = wrappedValue(value)
         switch value {
         case let value as Double:
             return value
@@ -125,6 +135,7 @@ enum PronoteJSON {
     }
 
     static func bool(_ value: Any?) -> Bool? {
+        let value = wrappedValue(value)
         switch value {
         case let value as Bool:
             return value
@@ -152,6 +163,7 @@ enum PronoteJSON {
     // MARK: - Dates
 
     static func date(_ value: Any?) -> Date? {
+        let value = wrappedValue(value)
         switch value {
         case let value as Date:
             return value

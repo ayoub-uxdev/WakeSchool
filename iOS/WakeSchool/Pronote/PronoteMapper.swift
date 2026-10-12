@@ -25,7 +25,8 @@ enum PronoteMapper {
     }
 
     static func resource(from response: Any) -> [String: Any]? {
-        if let dictionary = response as? [String: Any] {
+        let root = PronoteJSON.unwrap(response)
+        if let dictionary = root as? [String: Any] {
             if let resource = PronoteJSON.nestedDictionary(dictionary, keys: ["ressource", "Ressource"]) { return resource }
             if let dataSec = dictionary["dataSec"] { return resource(from: dataSec) }
             if let data = dictionary["data"] { return resource(from: data) }
@@ -37,29 +38,61 @@ enum PronoteMapper {
         return nil
     }
 
+    static func studentResource(
+        from response: Any,
+        accountKind: PronoteAccountKind
+    ) -> [String: Any]? {
+        let accountResource = resource(from: response)
+        guard accountKind == .parent else {
+            return accountResource
+        }
+        return (accountResource?["listeRessources"] as? [[String: Any]])?.first
+    }
+
     static func periods(from response: Any) -> [[String: Any]] {
         let root = PronoteJSON.unwrap(response)
         guard let dictionary = root as? [String: Any] else { return [] }
         let keys = ["listePeriodes", "periodes", "ListePeriodes", "Periodes"]
         for key in keys {
             if let array = dictionary[key] as? [[String: Any]] { return array }
+            if let wrapped = dictionary[key] as? [String: Any],
+               let array = wrapped["V"] as? [[String: Any]] {
+                return array
+            }
         }
         if let found = PronoteJSON.recursivelyFindDictionary(root, keys: keys) {
-            for key in keys { if let array = found[key] as? [[String: Any]] { return array } }
+            for key in keys {
+                if let array = found[key] as? [[String: Any]] { return array }
+                if let wrapped = found[key] as? [String: Any],
+                   let array = wrapped["V"] as? [[String: Any]] {
+                    return array
+                }
+            }
         }
         return []
     }
 
-    static func schoolYearStart(from response: Any, fallback: Date = Calendar.current.date(from: DateComponents(year: Calendar.current.component(.year, from: Date()), month: 9, day: 1))!) -> Date {
-        let keys = ["dateDebutAnnee", "DateDebutAnnee", "debutAnnee", "dateDebut"]
-        if let found = findValue(root: response, keys: keys), let date = PronoteJSON.date(found) { return date }
-        let now = Date()
-        let year = Calendar.current.component(.year, from: now)
-        let september = Calendar.current.date(from: DateComponents(year: year, month: 9, day: 1))!
-        return now < september ? Calendar.current.date(byAdding: .year, value: -1, to: september)! : september
+    static func schoolYearStart(from response: Any) -> Date? {
+        let root = PronoteJSON.unwrap(response)
+        guard let general = PronoteJSON.recursivelyFindDictionary(
+            root,
+            keys: ["PremierLundi"]
+        ) else {
+            return nil
+        }
+        return PronoteJSON.date(general["PremierLundi"])
     }
 
-    static func timetable(from response: Any) -> [TimetableEntry] {
+    static func timetable(
+        from response: Any,
+        schoolDayEndTimes: [[String: Any]] = []
+    ) -> [TimetableEntry] {
+        if let lessons = protocolItems(from: response, keys: ["ListeCours"]) {
+            return lessons.compactMap {
+                protocolTimetableEntry($0, schoolDayEndTimes: schoolDayEndTimes)
+            }.sorted { $0.start < $1.start }
+        }
+
         let root = PronoteJSON.unwrap(response)
         let candidates = collectDictionaries(root)
         let lessons = candidates.filter { dictionary in
@@ -97,6 +130,10 @@ enum PronoteMapper {
     }
 
     static func homework(from response: Any) -> [Homework] {
+        if let items = protocolItems(from: response, keys: ["ListeTravauxAFaire"]) {
+            return items.compactMap(protocolHomework).sorted { $0.dueDate < $1.dueDate }
+        }
+
         let root = PronoteJSON.unwrap(response)
         let candidates = collectDictionaries(root)
         let items = candidates.filter { dictionary in
@@ -126,6 +163,10 @@ enum PronoteMapper {
     }
 
     static func grades(from response: Any) -> [Grade] {
+        if let items = protocolItems(from: response, keys: ["listeDevoirs"]) {
+            return items.compactMap(protocolGrade).sorted { $0.date > $1.date }
+        }
+
         let root = PronoteJSON.unwrap(response)
         let candidates = collectDictionaries(root)
         let items = candidates.filter { dictionary in
@@ -152,6 +193,179 @@ enum PronoteMapper {
         return result.sorted { $0.date > $1.date }
     }
 
+    static func rawTimetableCount(from response: Any) -> Int {
+        protocolItems(from: response, keys: ["ListeCours"])?.count
+            ?? timetable(from: response).count
+    }
+
+    static func rawHomeworkCount(from response: Any) -> Int {
+        protocolItems(from: response, keys: ["ListeTravauxAFaire"])?.count
+            ?? homework(from: response).count
+    }
+
+    static func rawGradesCount(from response: Any) -> Int {
+        protocolItems(from: response, keys: ["listeDevoirs"])?.count
+            ?? grades(from: response).count
+    }
+
+    private static func protocolItems(
+        from response: Any,
+        keys: [String]
+    ) -> [[String: Any]]? {
+        let root = PronoteJSON.unwrap(response)
+        guard let container = PronoteJSON.recursivelyFindDictionary(root, keys: keys) else {
+            return nil
+        }
+        for key in keys {
+            if let items = container[key] as? [[String: Any]] {
+                return items
+            }
+            if let wrapped = container[key] as? [String: Any],
+               let items = wrapped["V"] as? [[String: Any]] {
+                return items
+            }
+        }
+        return []
+    }
+
+    private static func protocolTimetableEntry(
+        _ lesson: [String: Any],
+        schoolDayEndTimes: [[String: Any]]
+    ) -> TimetableEntry? {
+        guard let start = PronoteJSON.date(lesson["DateDuCours"]) else {
+            return nil
+        }
+        guard let end = PronoteJSON.date(lesson["DateDuCoursFin"])
+                ?? protocolLessonEnd(from: lesson, start: start, endTimes: schoolDayEndTimes) else {
+            return nil
+        }
+
+        let contents = (lesson["ListeContenus"] as? [String: Any])?["V"] as? [[String: Any]] ?? []
+        let subjectContent = contents.first { PronoteJSON.number($0["G"]) == 16 }
+        let subjectName = extractName(subjectContent) ?? "Matière"
+        let subjectID = stableID(prefix: "subject", value: extractID(subjectContent) ?? subjectName)
+        let subject = Subject(id: subjectID, name: subjectName)
+
+        let teachers = contents
+            .filter { PronoteJSON.number($0["G"]) == 3 }
+            .compactMap { extractName($0) }
+        let rooms = contents
+            .filter { PronoteJSON.number($0["G"]) == 17 }
+            .compactMap { extractName($0) }
+
+        let rawID = extractID(lesson) ?? "\(subjectName)|\(start.timeIntervalSince1970)|\(end.timeIntervalSince1970)"
+        let id = stableID(prefix: "lesson", value: rawID)
+        let teacherName = teachers.joined(separator: ", ")
+        let teacher: Teacher? = teacherName.isEmpty
+            ? nil
+            : Teacher(id: stableID(prefix: "teacher", value: teacherName), name: teacherName)
+        return TimetableEntry(
+            id: id,
+            subject: subject,
+            teacher: teacher,
+            room: rooms.isEmpty ? nil : rooms.joined(separator: ", "),
+            start: start,
+            end: end,
+            isCancelled: PronoteJSON.bool(lesson["estAnnule"]) ?? false,
+            isModified: false,
+            changeNote: PronoteJSON.string(lesson["memo"])
+        )
+    }
+
+    private static func protocolLessonEnd(
+        from lesson: [String: Any],
+        start: Date,
+        endTimes: [[String: Any]]
+    ) -> Date? {
+        guard endTimes.count > 1,
+              let place = PronoteJSON.number(lesson["place"]),
+              let duration = PronoteJSON.number(lesson["duree"]) else {
+            return nil
+        }
+        var endIndex = Int(place) % (endTimes.count - 1) + Int(duration) - 1
+        if endIndex > endTimes.count {
+            endIndex %= endTimes.count - 1
+        }
+        guard let timeText = endTimes.first(where: {
+            Int(PronoteJSON.number($0["G"]) ?? -1) == endIndex
+        }).flatMap({ PronoteJSON.string($0["L"]) }) else {
+            return nil
+        }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = .current
+        formatter.dateFormat = "HH'h'mm"
+        guard let parsedTime = formatter.date(from: timeText) else {
+            return nil
+        }
+        let components = Calendar.current.dateComponents([.hour, .minute], from: parsedTime)
+        guard let hour = components.hour, let minute = components.minute else {
+            return nil
+        }
+        return Calendar.current.date(
+            bySettingHour: hour,
+            minute: minute,
+            second: 0,
+            of: start
+        )
+    }
+
+    private static func protocolHomework(
+        from item: [String: Any]
+    ) -> Homework? {
+        guard let due = PronoteJSON.date(item["PourLe"]),
+              let subjectValue = (item["Matiere"] as? [String: Any])?["V"] ?? item["Matiere"] else {
+            return nil
+        }
+        let subjectName = extractName(subjectValue) ?? "Matière"
+        let subject = Subject(
+            id: stableID(prefix: "subject", value: extractID(subjectValue) ?? subjectName),
+            name: subjectName
+        )
+        let details = PronoteJSON.string(item["descriptif"]) ?? ""
+        let title = PronoteJSON.string(item["titre"]) ?? subjectName
+        let rawID = extractID(item) ?? "\(subjectName)|\(title)|\(due.timeIntervalSince1970)|\(details)"
+        return Homework(
+            id: stableID(prefix: "homework", value: rawID),
+            subject: subject,
+            title: title,
+            details: details,
+            dueDate: due,
+            isDone: PronoteJSON.bool(item["TAFFait"]) ?? false,
+            priority: .normal
+        )
+    }
+
+    private static func protocolGrade(
+        from item: [String: Any]
+    ) -> Grade? {
+        guard let value = PronoteJSON.number(item["note"]),
+              let date = PronoteJSON.date(item["date"]),
+              let subjectValue = (item["service"] as? [String: Any])?["V"] ?? item["service"] else {
+            return nil
+        }
+        let outOf = PronoteJSON.number(item["bareme"]) ?? 20
+        let coefficient = PronoteJSON.number(item["coefficient"]) ?? 1
+        let subjectName = extractName(subjectValue) ?? "Matière"
+        let subject = Subject(
+            id: stableID(prefix: "subject", value: extractID(subjectValue) ?? subjectName),
+            name: subjectName
+        )
+        let title = PronoteJSON.string(item["commentaire"])
+        let rawID = extractID(item) ?? "\(subjectName)|\(value)|\(outOf)|\(date.timeIntervalSince1970)|\(title ?? "")"
+        return Grade(
+            id: stableID(prefix: "grade", value: rawID),
+            subject: subject,
+            value: value,
+            outOf: outOf,
+            coefficient: coefficient,
+            date: date,
+            title: title
+        )
+    }
+
     private static func collectDictionaries(_ value: Any) -> [[String: Any]] {
         var result: [[String: Any]] = []
         func walk(_ value: Any) {
@@ -164,11 +378,6 @@ enum PronoteMapper {
         }
         walk(value)
         return result
-    }
-
-    private static func findValue(root: Any, keys: [String]) -> Any? {
-        if let dictionary = root as? [String: Any] { return findValue(in: dictionary, keys: keys) }
-        return nil
     }
 
     private static func findValue(in dictionary: [String: Any], keys: [String]) -> Any? {

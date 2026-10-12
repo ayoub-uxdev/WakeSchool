@@ -142,11 +142,9 @@ final class PronoteSessionClient {
         weekNumber: Int,
         resource: [String: Any]
     ) async throws -> Any {
+        let signature = try Self.signature(onglet: 16, resource: resource)
 
         let properties = PronoteAPIProperties.forVersion(session.version)
-        let signatureKey = session.version.lexicographicallyPrecedes([2024, 3, 9])
-            ? "_Signature_"
-            : "Signature"
         let payload: [String: Any] = [
             properties.data: [
                 "ressource": resource,
@@ -160,9 +158,7 @@ final class PronoteSessionClient {
                 "avecDisponibilites": true,
                 "avecInfosPrefsGrille": true
             ],
-            signatureKey: [
-                "onglet": 16
-            ]
+            Self.signatureKey(for: session.version): signature
         ]
 
         return try await request(
@@ -172,26 +168,20 @@ final class PronoteSessionClient {
     }
 
     func homework(
-        from start: Date,
-        to end: Date,
-        resource: [String: Any]
+        resource: [String: Any],
+        weekRange: ClosedRange<Int>
     ) async throws -> Any {
+        let signature = try Self.signature(onglet: 88, resource: resource)
 
         let properties = PronoteAPIProperties.forVersion(session.version)
-        let signatureKey = session.version.lexicographicallyPrecedes([2024, 3, 9])
-            ? "_Signature_"
-            : "Signature"
         let payload: [String: Any] = [
             properties.data: [
-                "ressource": resource,
-                "Ressource": resource,
-                "dateDebut": Self.dayString(start),
-                "dateFin": Self.dayString(end),
-                "avecRessource": true
+                "domaine": [
+                    "_T": 8,
+                    "V": "[\(weekRange.lowerBound)..\(weekRange.upperBound)]"
+                ]
             ],
-            signatureKey: [
-                "onglet": 20
-            ]
+            Self.signatureKey(for: session.version): signature
         ]
 
         return try await request(
@@ -200,18 +190,24 @@ final class PronoteSessionClient {
         )
     }
 
-    func grades(period: [String: Any]) async throws -> Any {
+    func grades(
+        period: [String: Any],
+        resource: [String: Any]
+    ) async throws -> Any {
+        let signature = try Self.signature(onglet: 198, resource: resource)
+        guard let periodID = period["N"],
+              let periodName = period["L"] else {
+            throw PronoteSessionError.invalidPeriod
+        }
         let properties = PronoteAPIProperties.forVersion(session.version)
-        let signatureKey = session.version.lexicographicallyPrecedes([2024, 3, 9])
-            ? "_Signature_"
-            : "Signature"
         let payload: [String: Any] = [
             properties.data: [
-                "periode": period
+                "Periode": [
+                    "N": periodID,
+                    "L": periodName
+                ]
             ],
-            signatureKey: [
-                "onglet": 198
-            ]
+            Self.signatureKey(for: session.version): signature
         ]
 
         return try await request(
@@ -220,14 +216,26 @@ final class PronoteSessionClient {
         )
     }
 
-    private static func dayString(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = .current
-        formatter.dateFormat = "yyyy-MM-dd"
+    private static func signature(
+        onglet: Int,
+        resource: [String: Any]
+    ) throws -> [String: Any] {
+        guard let resourceID = resource["N"] else {
+            throw PronoteSessionError.missingStudentResource
+        }
+        return [
+            "onglet": onglet,
+            "membre": [
+                "N": resourceID,
+                "G": 4
+            ]
+        ]
+    }
 
-        return formatter.string(from: date)
+    private static func signatureKey(for version: [Int]) -> String {
+        version.lexicographicallyPrecedes([2024, 3, 9])
+            ? "_Signature_"
+            : "Signature"
     }
 
     private static func dataSecJSON(
@@ -245,6 +253,8 @@ final class PronoteSessionClient {
 
 enum PronoteSessionError: Error, LocalizedError, Equatable {
     case invalidResponse
+    case missingStudentResource
+    case invalidPeriod
     case unexpectedResponseNumber(Int)
     case pronoteError(Int, String)
 
@@ -252,6 +262,12 @@ enum PronoteSessionError: Error, LocalizedError, Equatable {
         switch self {
         case .invalidResponse:
             return "Réponse PRONOTE invalide."
+
+        case .missingStudentResource:
+            return "La ressource élève PRONOTE ne contient pas d'identifiant."
+
+        case .invalidPeriod:
+            return "La période scolaire PRONOTE ne contient pas d'identifiant ou de libellé."
 
         case .unexpectedResponseNumber(let number):
             return "Numéro d'ordre PRONOTE inattendu : \(number)"
