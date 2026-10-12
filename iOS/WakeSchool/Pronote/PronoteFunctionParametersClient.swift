@@ -199,12 +199,12 @@ struct PronoteFunctionParametersClient {
             functionData = [:]
             functionOptionsErrorCode = "FUNCTION_OPTIONS_INVALID_FORMAT"
         }
-        let data = functionData["data"] as? [String: Any]
+        let parametersData = functionData["data"] as? [String: Any]
             ?? functionData["donnees"] as? [String: Any]
             ?? functionData
-        let schoolYearStart = PronoteMapper.schoolYearStart(from: data)
+        let schoolYearStart = PronoteMapper.schoolYearStart(from: parametersData)
         let schoolPeriods = PronoteMapper.periods(from: functionData)
-        let schoolDayEndTimes = Self.listValue(in: data, key: "ListeHeuresFin")
+        let schoolDayEndTimes = Self.listValue(in: parametersData, key: "ListeHeuresFin")
 
         return PronoteInitialSession(
             sessionID: session.sessionID,
