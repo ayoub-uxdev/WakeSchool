@@ -325,8 +325,9 @@ final class LivePronoteClient: PronoteClient, PronoteDataDiagnosticsReporting {
             }
             throw error
         }
-        let weekRange = schoolWeek(for: start, anchor: schoolYearStart)
-            ...schoolWeek(for: end, anchor: schoolYearStart)
+        let firstWeek = schoolWeek(for: start, anchor: schoolYearStart)
+        let lastWeek = schoolWeek(for: end, anchor: schoolYearStart)
+        let weekRange: ClosedRange<Int> = firstWeek...lastWeek
         let response = try await client.homework(
             resource: resource,
             weekRange: weekRange
