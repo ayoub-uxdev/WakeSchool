@@ -7,6 +7,38 @@ struct PronoteLoginOptions {
     var mobileToken: String? = nil
     var requestFirstMobileAuthentication: Bool = false
     var qrLogin: Bool = false
+    var automaticReconnection: Bool = false
+}
+
+enum PronoteLoginStage: Equatable {
+    case entConnection
+    case mobileTokenRecovery
+    case identification
+    case authentication
+    case automaticReconnection
+
+    var label: String {
+        switch self {
+        case .entConnection: return "Connexion ENT"
+        case .mobileTokenRecovery: return "Récupération ou validation du jeton mobile"
+        case .identification: return "Identification PRONOTE"
+        case .authentication: return "Authentification PRONOTE"
+        case .automaticReconnection: return "Reconnexion automatique"
+        }
+    }
+}
+
+struct PronoteLoginDiagnosticError: Error, LocalizedError, Equatable {
+    let stage: PronoteLoginStage
+    let operation: PronoteLoginStage?
+    let message: String
+
+    var errorDescription: String? {
+        if let operation {
+            return "\(stage.label) (\(operation.label)) : \(message)"
+        }
+        return "\(stage.label) : \(message)"
+    }
 }
 
 struct PronoteAuthenticationResult {
@@ -68,14 +100,15 @@ struct PronoteAuthenticator {
 
         let isQRLogin = options.qrLogin
         let isTokenLogin = options.mobileToken != nil
-        let mobileTokenProof: String
-        if let mobileToken = options.mobileToken {
-            mobileTokenProof = try PronoteCrypto.encryptedMobileTokenProof(
+        let mobileTokenProof = try await withDiagnostic(
+            .mobileTokenRecovery,
+            automaticReconnection: options.automaticReconnection
+        ) {
+            guard let mobileToken = options.mobileToken else { return "" }
+            return try PronoteCrypto.encryptedMobileTokenProof(
                 token: mobileToken,
                 iv: initial.sessionIV
             )
-        } else {
-            mobileTokenProof = ""
         }
         let mobileUUID = options.mobileUUID ?? credentials.mobileUUID ?? ""
         let apiProperties = PronoteAPIProperties.forVersion(session.version)
@@ -94,25 +127,29 @@ struct PronoteAuthenticator {
             "loginTokenSAV": mobileTokenProof
         ]
 
-        let identificationResponse = try await post(
-            function: "Identification",
-            data: [apiProperties.data: identification],
-            session: session,
-            requestNumber: initial.requestNumber,
-            key: defaultKey,
-            iv: initial.sessionIV,
-            compressed: initial.requestsAreCompressed,
-            encrypted: initial.requestsAreEncrypted
-        )
-
-        let identificationData = try Self.dataDictionary(
-            from: identificationResponse,
-            version: session.version
-        )
-        let challenge = try Self.string(identificationData["challenge"], field: "challenge")
-        guard !challenge.isEmpty else {
-            throw PronoteAuthenticationError.challengeFormatInvalid
+        let identificationData = try await withDiagnostic(
+            .identification,
+            automaticReconnection: options.automaticReconnection
+        ) {
+            let response = try await post(
+                function: "Identification",
+                data: [apiProperties.data: identification],
+                session: session,
+                requestNumber: initial.requestNumber,
+                key: defaultKey,
+                iv: initial.sessionIV,
+                compressed: initial.requestsAreCompressed,
+                encrypted: initial.requestsAreEncrypted
+            )
+            let data = try Self.dataDictionary(from: response, version: session.version)
+            let challenge = try Self.string(data["challenge"], field: "challenge")
+            guard !challenge.isEmpty else {
+                throw PronoteAuthenticationError.challengeFormatInvalid
+            }
+            return data
         }
+
+        let challenge = try Self.string(identificationData["challenge"], field: "challenge")
         let alea = (identificationData["alea"] as? String) ?? ""
         let modeCompMdp = Self.int(identificationData["modeCompMdp"]) > 0
         let modeCompLog = Self.int(identificationData["modeCompLog"]) > 0
@@ -130,72 +167,73 @@ struct PronoteAuthenticator {
             normalizedPassword = normalizedPassword.lowercased()
         }
 
-        let authKey: Data
-        if let mobileToken = options.mobileToken {
-            authKey = PronoteCrypto.aesKey(fromSeed: Data(mobileToken.utf8))
-        } else {
-            authKey = PronoteCrypto.deriveLoginKeys(
-                username: normalizedUsername,
-                password: normalizedPassword,
-                alea: alea,
-                ivTemp: initial.temporaryIV,
-                isENT: options.useENT
-            ).authKey
+        let (sessionKey, userName, token) = try await withDiagnostic(
+            .authentication,
+            automaticReconnection: options.automaticReconnection
+        ) {
+            let authKey: Data
+            if let mobileToken = options.mobileToken {
+                authKey = PronoteCrypto.aesKey(fromSeed: Data(mobileToken.utf8))
+            } else {
+                authKey = PronoteCrypto.deriveLoginKeys(
+                    username: normalizedUsername,
+                    password: normalizedPassword,
+                    alea: alea,
+                    ivTemp: initial.temporaryIV,
+                    isENT: options.useENT
+                ).authKey
+            }
+
+            let solvedChallenge = try PronoteCrypto.aesCBCEncrypt(
+                Data(challenge.utf8),
+                key: authKey,
+                iv: initial.sessionIV
+            )
+
+            var authData: [String: Any] = [
+                "connexion": 0,
+                "challenge": PronoteCrypto.hexString(from: solvedChallenge),
+                "espace": session.spaceID
+            ]
+            if isTokenLogin {
+                authData["pourENT"] = options.useENT
+                authData["identifiant"] = username
+                authData["enConnexionAppliMobile"] = true
+                authData["demandeConnexionAppliMobile"] = false
+                authData["demandeConnexionAppliMobileJeton"] = false
+                authData["uuidAppliMobile"] = mobileUUID
+                authData["loginTokenSAV"] = mobileTokenProof
+            }
+
+            let response = try await post(
+                function: "Authentification",
+                data: [apiProperties.data: authData],
+                session: session,
+                requestNumber: initial.requestNumber + 2,
+                key: defaultKey,
+                iv: initial.sessionIV,
+                compressed: initial.requestsAreCompressed,
+                encrypted: initial.requestsAreEncrypted
+            )
+            let data = try Self.dataDictionary(from: response, version: session.version)
+            let accessCode = Self.int(data["Acces"])
+            if accessCode != 0 {
+                throw PronoteAuthenticationError.authenticationRejected(accessCode)
+            }
+            guard let cle = data["cle"] as? String else {
+                throw PronoteAuthenticationError.missingSessionKey
+            }
+            let sessionKey = try PronoteCrypto.deriveSessionKey(
+                cleCipherHex: cle,
+                authKey: authKey,
+                iv: initial.sessionIV
+            )
+            return (
+                sessionKey,
+                data["libelleUtil"] as? String,
+                data["jetonConnexionAppliMobile"] as? String
+            )
         }
-
-        // PRONOTE returns a plaintext UTF-8 challenge; AES-CBC/hex is applied only to the answer.
-        let solvedChallenge = try PronoteCrypto.aesCBCEncrypt(
-            Data(challenge.utf8),
-            key: authKey,
-            iv: initial.sessionIV
-        )
-
-        var authData: [String: Any] = [
-            "connexion": 0,
-            "challenge": PronoteCrypto.hexString(from: solvedChallenge, uppercase: false),
-            "espace": session.spaceID
-        ]
-        if isTokenLogin {
-            authData["pourENT"] = options.useENT
-            authData["identifiant"] = username
-            authData["enConnexionAppliMobile"] = true
-            authData["demandeConnexionAppliMobile"] = false
-            authData["demandeConnexionAppliMobileJeton"] = false
-            authData["uuidAppliMobile"] = mobileUUID
-            authData["loginTokenSAV"] = mobileTokenProof
-        }
-
-        let authResponse = try await post(
-            function: "Authentification",
-            data: [apiProperties.data: authData],
-            session: session,
-            requestNumber: initial.requestNumber + 2,
-            key: defaultKey,
-            iv: initial.sessionIV,
-            compressed: initial.requestsAreCompressed,
-            encrypted: initial.requestsAreEncrypted
-        )
-
-        let authenticatedData = try Self.dataDictionary(
-            from: authResponse,
-            version: session.version
-        )
-        let accessCode = Self.int(authenticatedData["Acces"])
-        if accessCode != 0 {
-            throw PronoteAuthenticationError.authenticationRejected(accessCode)
-        }
-        guard let cle = authenticatedData["cle"] as? String else {
-            throw PronoteAuthenticationError.missingSessionKey
-        }
-
-        let sessionKey = try PronoteCrypto.deriveSessionKey(
-            cleCipherHex: cle,
-            authKey: authKey,
-            iv: initial.sessionIV
-        )
-
-        let userName = authenticatedData["libelleUtil"] as? String
-        let token = authenticatedData["jetonConnexionAppliMobile"] as? String
 
         return PronoteAuthenticationResult(
             sessionID: session.sessionID,
@@ -211,6 +249,23 @@ struct PronoteAuthenticator {
             mobileToken: token,
             initialParameters: nil
         )
+    }
+
+    private func withDiagnostic<T>(
+        _ operation: PronoteLoginStage,
+        automaticReconnection: Bool,
+        body: () async throws -> T
+    ) async throws -> T {
+        do {
+            return try await body()
+        } catch {
+            let stage = automaticReconnection ? PronoteLoginStage.automaticReconnection : operation
+            throw PronoteLoginDiagnosticError(
+                stage: stage,
+                operation: automaticReconnection ? operation : nil,
+                message: error.localizedDescription
+            )
+        }
     }
 
     private func post(

@@ -57,10 +57,11 @@ final class PronoteFunctionParametersClientTests: XCTestCase {
     func testInitialFunctionParametersPayloadUsesZeroIV() async throws {
         let key = PronoteCrypto.md5(Data())
         let zeroIV = Data(repeating: 0, count: 16)
+        let temporaryIV = Data(repeating: 0xA5, count: 16)
         let responseOrder = try PronoteCrypto.aesCBCEncrypt(
             Data("2".utf8),
             key: key,
-            iv: zeroIV
+            iv: PronoteCrypto.md5(temporaryIV)
         )
         let transport = FunctionParametersFakeTransport(
             response: [
@@ -75,7 +76,6 @@ final class PronoteFunctionParametersClientTests: XCTestCase {
             skipRequestEncryption: false,
             skipRequestCompression: false
         )
-        let temporaryIV = Data(repeating: 0xA5, count: 16)
         let client = PronoteFunctionParametersClient(transport: transport)
 
         _ = try await client.start(

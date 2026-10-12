@@ -31,6 +31,30 @@ final class PronoteAuthenticationCryptoTests: XCTestCase {
         }
     }
 
+    func testPlainChallengeEncryptionMatchesPronotepyVector() throws {
+        let vector = try XCTUnwrap(
+            PronoteCryptoFixtures.logins.first { $0.name == "standard" }
+        )
+        let ivTemp = try PronoteCrypto.data(fromHex: vector.ivTempHex)
+        let keys = PronoteCrypto.deriveLoginKeys(
+            username: vector.username,
+            password: vector.password,
+            alea: vector.alea,
+            ivTemp: ivTemp,
+            isENT: false
+        )
+        let encryptedChallenge = try PronoteCrypto.aesCBCEncrypt(
+            Data(vector.challenge.utf8),
+            key: keys.authKey,
+            iv: keys.iv
+        )
+
+        XCTAssertEqual(
+            PronoteCrypto.hexString(from: encryptedChallenge),
+            vector.challengeCipherHex
+        )
+    }
+
     func testENTLoginKeyDerivationMatchesPronote2026Protocol() {
         let keys = PronoteCrypto.deriveLoginKeys(
             username: "ignored-login",
@@ -47,6 +71,23 @@ final class PronoteAuthenticationCryptoTests: XCTestCase {
         XCTAssertEqual(
             PronoteCrypto.hexString(from: keys.authKey),
             "ddfbc0225c1d81018990182afd9da377"
+        )
+    }
+
+    func testMobileTokenChallengeMatchesPRONOTE2026AESVector() throws {
+        let token = "mobile-token"
+        let temporaryIV = Data((0...15).map { UInt8($0) })
+        let sessionIV = PronoteCrypto.md5(temporaryIV)
+        let tokenKey = PronoteCrypto.aesKey(fromSeed: Data(token.utf8))
+        let ciphertext = try PronoteCrypto.aesCBCEncrypt(
+            Data("mobile challenge".utf8),
+            key: tokenKey,
+            iv: sessionIV
+        )
+
+        XCTAssertEqual(
+            PronoteCrypto.hexString(from: ciphertext),
+            "b8dc5fb170061aee0891ab0f13439bf12eb50886e711877300e71c07ed0843c5"
         )
     }
 

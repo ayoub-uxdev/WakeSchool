@@ -48,7 +48,7 @@ final class LivePronoteClient: PronoteClient {
             username: decoded.username,
             password: decoded.password,
             accountKind: decoded.accountKind,
-            usesMobileToken: true,
+            usesMobileToken: false,
             mobileUUID: mobileUUID
         )
 
@@ -67,10 +67,12 @@ final class LivePronoteClient: PronoteClient {
         )
 
         let profile = try await client.profile()
-        if let refreshedToken = try await client.refreshedMobileToken(),
-           !refreshedToken.isEmpty {
-            credentials.password = refreshedToken
+        guard let refreshedToken = try await client.refreshedMobileToken(),
+              !refreshedToken.isEmpty else {
+            throw PronoteQRLoginError.missingMobileToken
         }
+        credentials.password = refreshedToken
+        credentials.usesMobileToken = true
 
         return PronoteQRLoginResult(
             credentials: credentials,
@@ -130,7 +132,8 @@ final class LivePronoteClient: PronoteClient {
         username: String,
         mobileToken: String,
         accountKind: PronoteAccountKind,
-        mobileUUID: String
+        mobileUUID: String,
+        transport: PronoteHTTPTransporting = PronoteHTTPTransport()
     ) async throws -> PronoteQRLoginResult {
         let normalizedUsername = username.trimmingCharacters(
             in: .whitespacesAndNewlines
@@ -146,7 +149,7 @@ final class LivePronoteClient: PronoteClient {
             username: normalizedUsername,
             password: mobileToken,
             accountKind: accountKind,
-            usesMobileToken: true,
+            usesMobileToken: false,
             mobileUUID: mobileUUID
         )
         let client = LivePronoteClient(
@@ -155,10 +158,27 @@ final class LivePronoteClient: PronoteClient {
                 mobileUUID: mobileUUID,
                 clientIdentifier: mobileUUID,
                 mobileToken: mobileToken
-            )
+            ),
+            transport: transport
         )
 
-        let profile = try await client.profile()
+        let profile: PronoteProfile
+        do {
+            profile = try await client.profile()
+        } catch let diagnostic as PronoteLoginDiagnosticError {
+            throw PronoteLoginDiagnosticError(
+                stage: .mobileTokenRecovery,
+                operation: diagnostic.operation ?? diagnostic.stage,
+                message: diagnostic.message
+            )
+        } catch {
+            throw PronoteLoginDiagnosticError(
+                stage: .mobileTokenRecovery,
+                operation: nil,
+                message: error.localizedDescription
+            )
+        }
+        credentials.usesMobileToken = true
         if let refreshedToken = try await client.refreshedMobileToken(),
            !refreshedToken.isEmpty {
             credentials.password = refreshedToken
@@ -346,11 +366,12 @@ final class LivePronoteClient: PronoteClient {
             return sessionClient
         }
 
-        let sessionParameters =
+        let sessionParameters = try await diagnoseAutomaticReconnection {
             try await transport.bootstrap(
                 serverURL: credentials.serverURL,
                 accountKind: credentials.accountKind
             )
+        }
 
         let functionClient =
             PronoteFunctionParametersClient(
@@ -376,12 +397,13 @@ final class LivePronoteClient: PronoteClient {
             throw PronoteLiveError.randomGenerationFailed
         }
 
-        let initial =
+        let initial = try await diagnoseAutomaticReconnection {
             try await functionClient.start(
                 session: sessionParameters,
                 clientIdentifier: options.clientIdentifier,
                 temporaryIV: temporaryIV
             )
+        }
 
         let authenticator =
             PronoteAuthenticator(
@@ -405,6 +427,24 @@ final class LivePronoteClient: PronoteClient {
         sessionClient = client
 
         return client
+    }
+
+    private func diagnoseAutomaticReconnection<T>(
+        _ operation: () async throws -> T
+    ) async throws -> T {
+        do {
+            return try await operation()
+        } catch {
+            guard options.automaticReconnection else { throw error }
+            if error is PronoteLoginDiagnosticError {
+                throw error
+            }
+            throw PronoteLoginDiagnosticError(
+                stage: .automaticReconnection,
+                operation: nil,
+                message: error.localizedDescription
+            )
+        }
     }
 
     // MARK: - User Parameters

@@ -207,13 +207,36 @@ struct PronoteENTLoginWebView: UIViewRepresentable {
             didReceive message: WKScriptMessage
         ) {
             guard !hasReportedLogin,
+                  !hasReportedError,
                   message.frameInfo.isMainFrame,
                   message.frameInfo.securityOrigin.host.lowercased() == expectedHost,
-                  let payload = message.body as? [String: String],
-                  let username = payload["login"],
+                  let payload = message.body as? [String: String] else {
+                return
+            }
+
+            if let error = payload["error"] {
+                hasReportedError = true
+                onError(
+                    PronoteLoginDiagnosticError(
+                        stage: .mobileTokenRecovery,
+                        operation: nil,
+                        message: error
+                    ).localizedDescription
+                )
+                return
+            }
+            guard let username = payload["login"],
                   let token = payload["token"],
                   !username.isEmpty,
                   !token.isEmpty else {
+                hasReportedError = true
+                onError(
+                    PronoteLoginDiagnosticError(
+                        stage: .mobileTokenRecovery,
+                        operation: nil,
+                        message: "Le retour de connexion ENT ne contient pas les données attendues."
+                    ).localizedDescription
+                )
                 return
             }
 
@@ -278,7 +301,13 @@ struct PronoteENTLoginWebView: UIViewRepresentable {
         private func report(_ message: String) {
             guard !hasReportedError else { return }
             hasReportedError = true
-            onError(message)
+            onError(
+                PronoteLoginDiagnosticError(
+                    stage: .entConnection,
+                    operation: nil,
+                    message: message
+                ).localizedDescription
+            )
         }
     }
 }

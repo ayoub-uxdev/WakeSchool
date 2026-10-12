@@ -80,7 +80,8 @@ final class AppEnvironment {
                     ? credentials.password
                     : nil,
                 requestFirstMobileAuthentication: false,
-                qrLogin: false
+                qrLogin: false,
+                automaticReconnection: true
             )
 
             return PronoteSchoolDataProvider(
