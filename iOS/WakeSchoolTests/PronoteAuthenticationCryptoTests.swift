@@ -74,20 +74,28 @@ final class PronoteAuthenticationCryptoTests: XCTestCase {
         )
     }
 
-    func testMobileTokenChallengeMatchesPRONOTE2026AESVector() throws {
+    func testMobileTokenUsesStandardPronoteLoginKeyDerivation() throws {
+        let username = "student"
         let token = "mobile-token"
+        let alea = "synthetic-alea"
         let temporaryIV = Data((0...15).map { UInt8($0) })
         let sessionIV = PronoteCrypto.md5(temporaryIV)
-        let tokenKey = PronoteCrypto.aesKey(fromSeed: Data(token.utf8))
+        let key = PronoteCrypto.deriveLoginKeys(
+            username: username,
+            password: token,
+            alea: alea,
+            ivTemp: temporaryIV,
+            isENT: false
+        ).authKey
         let ciphertext = try PronoteCrypto.aesCBCEncrypt(
             Data("mobile challenge".utf8),
-            key: tokenKey,
+            key: key,
             iv: sessionIV
         )
 
         XCTAssertEqual(
             PronoteCrypto.hexString(from: ciphertext),
-            "b8dc5fb170061aee0891ab0f13439bf12eb50886e711877300e71c07ed0843c5"
+            "a1b3b8dd94947c5cddadc3f151bce0bc408bce30a645e7f4c0886b595789796a"
         )
     }
 

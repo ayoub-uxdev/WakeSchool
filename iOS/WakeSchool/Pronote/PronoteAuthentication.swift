@@ -8,6 +8,20 @@ struct PronoteLoginOptions {
     var requestFirstMobileAuthentication: Bool = false
     var qrLogin: Bool = false
     var automaticReconnection: Bool = false
+
+    static func automaticReconnection(
+        for credentials: PronoteCredentials
+    ) -> Self {
+        Self(
+            useENT: false,
+            mobileUUID: credentials.mobileUUID,
+            clientIdentifier: credentials.mobileUUID,
+            mobileToken: credentials.usesMobileToken ? credentials.password : nil,
+            requestFirstMobileAuthentication: false,
+            qrLogin: false,
+            automaticReconnection: true
+        )
+    }
 }
 
 enum PronoteLoginStage: Equatable {
@@ -60,6 +74,11 @@ enum PronoteAuthenticationError: Error, LocalizedError, Equatable {
     case invalidResponse
     case missingField(String)
     case challengeFormatInvalid
+    case emptyMobileToken
+    case mobileTokenMismatch
+    case missingMobileUUID
+    case mobileUUIDMismatch
+    case missingClientIdentifier
     case authenticationRejected(Int)
     case missingSessionKey
     case unsupportedLogin
@@ -72,6 +91,16 @@ enum PronoteAuthenticationError: Error, LocalizedError, Equatable {
             return "Champ PRONOTE manquant : \(field)."
         case .challengeFormatInvalid:
             return "PRONOTE a renvoyé un challenge vide ou invalide."
+        case .emptyMobileToken:
+            return "Le jeton mobile PRONOTE enregistré est vide."
+        case .mobileTokenMismatch:
+            return "Le jeton mobile sélectionné ne correspond pas au jeton des identifiants enregistrés."
+        case .missingMobileUUID:
+            return "L'identifiant stable de cette installation est absent."
+        case .mobileUUIDMismatch:
+            return "L'identifiant mobile sélectionné ne correspond pas à l'identifiant enregistré."
+        case .missingClientIdentifier:
+            return "L'identifiant client PRONOTE est absent."
         case .authenticationRejected(let code):
             if code == 1 {
                 return "PRONOTE a refusé l'identifiant ou le mot de passe (code 1)."
@@ -100,17 +129,55 @@ struct PronoteAuthenticator {
 
         let isQRLogin = options.qrLogin
         let isTokenLogin = options.mobileToken != nil
-        let mobileTokenProof = try await withDiagnostic(
-            .mobileTokenRecovery,
-            automaticReconnection: options.automaticReconnection
-        ) {
-            guard let mobileToken = options.mobileToken else { return "" }
-            return try PronoteCrypto.encryptedMobileTokenProof(
-                token: mobileToken,
-                iv: initial.sessionIV
-            )
-        }
         let mobileUUID = options.mobileUUID ?? credentials.mobileUUID ?? ""
+        let diagnosticContext = Self.diagnosticContext(
+            credentials: credentials,
+            options: options,
+            mobileUUID: mobileUUID
+        )
+        if let mobileToken = options.mobileToken {
+            guard !mobileToken.isEmpty else {
+                throw Self.diagnosticError(
+                    PronoteAuthenticationError.emptyMobileToken,
+                    stage: .identification,
+                    options: options,
+                    context: diagnosticContext
+                )
+            }
+            guard mobileToken == credentials.password else {
+                throw Self.diagnosticError(
+                    PronoteAuthenticationError.mobileTokenMismatch,
+                    stage: .identification,
+                    options: options,
+                    context: diagnosticContext
+                )
+            }
+            guard !mobileUUID.isEmpty else {
+                throw Self.diagnosticError(
+                    PronoteAuthenticationError.missingMobileUUID,
+                    stage: .identification,
+                    options: options,
+                    context: diagnosticContext
+                )
+            }
+            if let storedMobileUUID = credentials.mobileUUID,
+               storedMobileUUID != mobileUUID {
+                throw Self.diagnosticError(
+                    PronoteAuthenticationError.mobileUUIDMismatch,
+                    stage: .identification,
+                    options: options,
+                    context: diagnosticContext
+                )
+            }
+            guard options.clientIdentifier?.isEmpty == false else {
+                throw Self.diagnosticError(
+                    PronoteAuthenticationError.missingClientIdentifier,
+                    stage: .identification,
+                    options: options,
+                    context: diagnosticContext
+                )
+            }
+        }
         let apiProperties = PronoteAPIProperties.forVersion(session.version)
 
         let identification: [String: Any] = [
@@ -124,12 +191,13 @@ struct PronoteAuthenticator {
             "demandeConnexionAppliMobileJeton": isQRLogin,
             "enConnexionAppliMobile": isTokenLogin,
             "uuidAppliMobile": mobileUUID,
-            "loginTokenSAV": mobileTokenProof
+            "loginTokenSAV": ""
         ]
 
         let identificationData = try await withDiagnostic(
             .identification,
-            automaticReconnection: options.automaticReconnection
+            automaticReconnection: options.automaticReconnection,
+            context: diagnosticContext
         ) {
             let response = try await post(
                 function: "Identification",
@@ -169,20 +237,16 @@ struct PronoteAuthenticator {
 
         let (sessionKey, userName, token) = try await withDiagnostic(
             .authentication,
-            automaticReconnection: options.automaticReconnection
+            automaticReconnection: options.automaticReconnection,
+            context: diagnosticContext
         ) {
-            let authKey: Data
-            if let mobileToken = options.mobileToken {
-                authKey = PronoteCrypto.aesKey(fromSeed: Data(mobileToken.utf8))
-            } else {
-                authKey = PronoteCrypto.deriveLoginKeys(
-                    username: normalizedUsername,
-                    password: normalizedPassword,
-                    alea: alea,
-                    ivTemp: initial.temporaryIV,
-                    isENT: options.useENT
-                ).authKey
-            }
+            let authKey = PronoteCrypto.deriveLoginKeys(
+                username: normalizedUsername,
+                password: normalizedPassword,
+                alea: alea,
+                ivTemp: initial.temporaryIV,
+                isENT: options.useENT
+            ).authKey
 
             let solvedChallenge = try PronoteCrypto.aesCBCEncrypt(
                 Data(challenge.utf8),
@@ -195,15 +259,6 @@ struct PronoteAuthenticator {
                 "challenge": PronoteCrypto.hexString(from: solvedChallenge),
                 "espace": session.spaceID
             ]
-            if isTokenLogin {
-                authData["pourENT"] = options.useENT
-                authData["identifiant"] = username
-                authData["enConnexionAppliMobile"] = true
-                authData["demandeConnexionAppliMobile"] = false
-                authData["demandeConnexionAppliMobileJeton"] = false
-                authData["uuidAppliMobile"] = mobileUUID
-                authData["loginTokenSAV"] = mobileTokenProof
-            }
 
             let response = try await post(
                 function: "Authentification",
@@ -254,6 +309,7 @@ struct PronoteAuthenticator {
     private func withDiagnostic<T>(
         _ operation: PronoteLoginStage,
         automaticReconnection: Bool,
+        context: String,
         body: () async throws -> T
     ) async throws -> T {
         do {
@@ -263,9 +319,44 @@ struct PronoteAuthenticator {
             throw PronoteLoginDiagnosticError(
                 stage: stage,
                 operation: automaticReconnection ? operation : nil,
-                message: error.localizedDescription
+                message: "\(error.localizedDescription) \(context)"
             )
         }
+    }
+
+    private static func diagnosticContext(
+        credentials: PronoteCredentials,
+        options: PronoteLoginOptions,
+        mobileUUID: String
+    ) -> String {
+        let tokenPresent = options.mobileToken.map { !$0.isEmpty } ?? false
+        let mode: String
+        if options.qrLogin {
+            mode = "QR initial"
+        } else if tokenPresent {
+            mode = options.automaticReconnection
+                ? "reconnexion par jeton mobile"
+                : "connexion par jeton mobile"
+        } else if options.useENT {
+            mode = "identifiants ENT"
+        } else {
+            mode = "identifiants PRONOTE"
+        }
+        return "[diagnostic non sensible : mode=\(mode), jetonPrésent=\(tokenPresent), UUIDPrésent=\(!mobileUUID.isEmpty), clientIdentifierPrésent=\(!(options.clientIdentifier ?? "").isEmpty), jetonEnregistré=\(credentials.usesMobileToken), reconnexionAutomatique=\(options.automaticReconnection), enConnexionAppliMobile=\(tokenPresent), demandeConnexionAppliMobile=\(options.requestFirstMobileAuthentication), demandeConnexionAppliMobileJeton=\(options.qrLogin), QR=\(options.qrLogin), ENT=\(options.useENT)]"
+    }
+
+    private static func diagnosticError(
+        _ error: Error,
+        stage: PronoteLoginStage,
+        options: PronoteLoginOptions,
+        context: String
+    ) -> PronoteLoginDiagnosticError {
+        let automaticReconnection = options.automaticReconnection
+        return PronoteLoginDiagnosticError(
+            stage: automaticReconnection ? .automaticReconnection : stage,
+            operation: automaticReconnection ? stage : nil,
+            message: "\(error.localizedDescription) \(context)"
+        )
     }
 
     private func post(

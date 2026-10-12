@@ -269,37 +269,6 @@ enum PronoteCrypto {
                          iv: md5(ivTemp))
     }
 
-    static func encryptedMobileTokenProof(
-        token: String,
-        iv: Data
-    ) throws -> String {
-        let randomLength = Int.random(in: 2...9)
-        let nonce = try secureRandomBytes(count: randomLength)
-        return try encryptedMobileTokenProof(token: token, iv: iv, nonce: nonce)
-    }
-
-    static func encryptedMobileTokenProof(
-        token: String,
-        iv: Data,
-        nonce: Data
-    ) throws -> String {
-        guard !token.isEmpty, (2...9).contains(nonce.count) else {
-            throw PronoteCryptoError.invalidKeyLength
-        }
-
-        let checksum = nonce.reduce(0) { ($0 + Int($1)) % 255 }
-        var message = nonce
-        if checksum != 0 {
-            message.append(UInt8(255 - checksum))
-        }
-        let cipher = try aesCBCEncrypt(
-            message,
-            key: aesKey(fromSeed: Data(token.utf8)),
-            iv: iv
-        )
-        return hexString(from: cipher)
-    }
-
     /// Pawnote/node-forge treats untagged binary strings as one byte per UTF-16 code unit.
     static func binaryStringData(_ string: String) -> Data {
         Data(string.utf16.map { UInt8(truncatingIfNeeded: $0) })
@@ -377,17 +346,6 @@ enum PronoteCrypto {
             for byte in chunk where byte != 0 && result.count < count {
                 result.append(byte)
             }
-        }
-        return result
-    }
-
-    private static func secureRandomBytes(count: Int) throws -> Data {
-        var result = Data(count: count)
-        let status = result.withUnsafeMutableBytes { buffer in
-            SecRandomCopyBytes(kSecRandomDefault, count, buffer.baseAddress!)
-        }
-        guard status == errSecSuccess else {
-            throw PronoteCryptoError.randomGenerationFailed
         }
         return result
     }

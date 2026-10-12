@@ -72,22 +72,17 @@ final class AppEnvironment {
                 )
             }
 
-            let options = PronoteLoginOptions(
-                useENT: false,
-                mobileUUID: credentials.mobileUUID,
-                clientIdentifier: credentials.mobileUUID,
-                mobileToken: credentials.usesMobileToken
-                    ? credentials.password
-                    : nil,
-                requestFirstMobileAuthentication: false,
-                qrLogin: false,
-                automaticReconnection: true
+            let options = PronoteLoginOptions.automaticReconnection(
+                for: credentials
             )
 
             return PronoteSchoolDataProvider(
                 client: LivePronoteClient(
                     credentials: credentials,
-                    options: options
+                    options: options,
+                    onCredentialsUpdated: { updatedCredentials in
+                        try CredentialsStore(store: secrets).save(updatedCredentials)
+                    }
                 )
             )
         }

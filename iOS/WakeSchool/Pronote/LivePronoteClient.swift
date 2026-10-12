@@ -6,6 +6,7 @@ final class LivePronoteClient: PronoteClient {
     private let credentials: PronoteCredentials
     private let options: PronoteLoginOptions
     private let transport: PronoteHTTPTransporting
+    private let onCredentialsUpdated: ((PronoteCredentials) throws -> Void)?
 
     private var sessionClient: PronoteSessionClient?
     private var resource: [String: Any]?
@@ -15,11 +16,13 @@ final class LivePronoteClient: PronoteClient {
     init(
         credentials: PronoteCredentials,
         options: PronoteLoginOptions = PronoteLoginOptions(),
-        transport: PronoteHTTPTransporting = PronoteHTTPTransport()
+        transport: PronoteHTTPTransporting = PronoteHTTPTransport(),
+        onCredentialsUpdated: ((PronoteCredentials) throws -> Void)? = nil
     ) {
         self.credentials = credentials
         self.options = options
         self.transport = transport
+        self.onCredentialsUpdated = onCredentialsUpdated
     }
 
     // MARK: - QR Login
@@ -140,7 +143,8 @@ final class LivePronoteClient: PronoteClient {
         )
         guard !serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !normalizedUsername.isEmpty,
-              !mobileToken.isEmpty else {
+              !mobileToken.isEmpty,
+              !mobileUUID.isEmpty else {
             throw PronoteLiveError.invalidMobileTokenCredentials
         }
 
@@ -178,11 +182,16 @@ final class LivePronoteClient: PronoteClient {
                 message: error.localizedDescription
             )
         }
-        credentials.usesMobileToken = true
-        if let refreshedToken = try await client.refreshedMobileToken(),
-           !refreshedToken.isEmpty {
-            credentials.password = refreshedToken
+        guard let refreshedToken = try await client.refreshedMobileToken(),
+              !refreshedToken.isEmpty else {
+            throw PronoteLoginDiagnosticError(
+                stage: .mobileTokenRecovery,
+                operation: nil,
+                message: "PRONOTE n'a pas fourni de jeton mobile de reconnexion après l'authentification."
+            )
         }
+        credentials.password = refreshedToken
+        credentials.usesMobileToken = true
 
         return PronoteQRLoginResult(
             credentials: credentials,
@@ -417,6 +426,15 @@ final class LivePronoteClient: PronoteClient {
                 initial: initial,
                 options: options
             )
+
+        if credentials.usesMobileToken,
+           let refreshedToken = authentication.mobileToken,
+           !refreshedToken.isEmpty,
+           refreshedToken != credentials.password {
+            var updatedCredentials = credentials
+            updatedCredentials.password = refreshedToken
+            try onCredentialsUpdated?(updatedCredentials)
+        }
 
         let client =
             PronoteSessionClient(

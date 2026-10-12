@@ -200,6 +200,7 @@ final class PronoteAuthenticationProtocolTests: XCTestCase {
                 initial: initial,
                 options: PronoteLoginOptions(
                     mobileUUID: "stable-device-id",
+                    clientIdentifier: "stable-device-id",
                     mobileToken: token,
                     automaticReconnection: true
                 )
@@ -209,6 +210,10 @@ final class PronoteAuthenticationProtocolTests: XCTestCase {
             XCTAssertEqual(error.stage, .automaticReconnection)
             XCTAssertEqual(error.operation, .authentication)
             XCTAssertTrue(error.localizedDescription.contains("code 1"))
+            XCTAssertTrue(error.localizedDescription.contains("jetonPrésent=true"))
+            XCTAssertTrue(error.localizedDescription.contains("UUIDPrésent=true"))
+            XCTAssertTrue(error.localizedDescription.contains("reconnexionAutomatique=true"))
+            XCTAssertFalse(error.localizedDescription.contains(token))
         }
         XCTAssertEqual(transport.requestBodies.count, 2)
     }
@@ -276,12 +281,19 @@ final class PronoteAuthenticationProtocolTests: XCTestCase {
         )
     }
 
-    func testStoredMobileTokenReconnectionUsesTokenKeyAndProof() async throws {
+    func testStoredMobileTokenReconnectionUsesStandardPasswordDerivation() async throws {
         let mobileToken = "mobile-token"
         let username = "student"
+        let alea = "token-login-alea"
         let temporaryIV = Data((0...15).map { UInt8($0) })
         let sessionIV = PronoteCrypto.md5(temporaryIV)
-        let tokenKey = PronoteCrypto.aesKey(fromSeed: Data(mobileToken.utf8))
+        let tokenKey = PronoteCrypto.deriveLoginKeys(
+            username: username,
+            password: mobileToken,
+            alea: alea,
+            ivTemp: temporaryIV,
+            isENT: false
+        ).authKey
         let challenge = "mobile challenge"
         let cleCipher = try PronoteCrypto.aesCBCEncrypt(
             Data("9,8,7,6".utf8),
@@ -289,7 +301,7 @@ final class PronoteAuthenticationProtocolTests: XCTestCase {
             iv: sessionIV
         )
         let transport = AuthenticationFakeTransport(responses: [
-            try response(challenge: challenge),
+            try response(challenge: challenge, alea: alea),
             try response(cle: PronoteCrypto.hexString(from: cleCipher))
         ])
         let (session, initial) = makeSession(
@@ -311,7 +323,8 @@ final class PronoteAuthenticationProtocolTests: XCTestCase {
             options: PronoteLoginOptions(
                 mobileUUID: "stable-device-id",
                 clientIdentifier: "stable-device-id",
-                mobileToken: mobileToken
+                mobileToken: mobileToken,
+                automaticReconnection: true
             )
         )
 
@@ -321,31 +334,86 @@ final class PronoteAuthenticationProtocolTests: XCTestCase {
         let authentication = try XCTUnwrap(
             requestData(transport.requestBodies[1])
         )
-        let proofHex = try XCTUnwrap(identification["loginTokenSAV"] as? String)
-        let proofPlain = try PronoteCrypto.aesCBCDecrypt(
-            PronoteCrypto.data(fromHex: proofHex),
+        let expectedChallenge = try PronoteCrypto.aesCBCEncrypt(
+            Data(challenge.utf8),
             key: tokenKey,
             iv: sessionIV
         )
-
         XCTAssertEqual(identification["enConnexionAppliMobile"] as? Bool, true)
+        XCTAssertEqual(identification["demandeConnexionAppliMobile"] as? Bool, false)
         XCTAssertEqual(identification["demandeConnexionAppliMobileJeton"] as? Bool, false)
         XCTAssertEqual(identification["uuidAppliMobile"] as? String, "stable-device-id")
-        XCTAssertNotEqual(proofHex, mobileToken)
-        XCTAssertTrue((2...10).contains(proofPlain.count))
-        XCTAssertEqual(proofPlain.reduce(0) { ($0 + Int($1)) % 255 }, 0)
-        XCTAssertEqual(authentication["loginTokenSAV"] as? String, proofHex)
-        XCTAssertEqual(authentication["enConnexionAppliMobile"] as? Bool, true)
+        XCTAssertEqual(identification["loginTokenSAV"] as? String, "")
+        XCTAssertEqual(identification["enConnexionAuto"] as? Bool, false)
+        XCTAssertEqual(identification["demandeConnexionAuto"] as? Bool, false)
+        XCTAssertNil(authentication["loginTokenSAV"])
+        XCTAssertNil(authentication["enConnexionAppliMobile"])
         XCTAssertEqual(
             authentication["challenge"] as? String,
-            "b8dc5fb170061aee0891ab0f13439bf12eb50886e711877300e71c07ed0843c5"
+            PronoteCrypto.hexString(from: expectedChallenge)
         )
         XCTAssertEqual(identification["identifiant"] as? String, username)
         XCTAssertEqual(identification["pourENT"] as? Bool, false)
-        XCTAssertEqual(authentication["identifiant"] as? String, username)
-        XCTAssertEqual(authentication["pourENT"] as? Bool, false)
         XCTAssertEqual(result.requestNumber, initial.requestNumber + 4)
         XCTAssertEqual(transport.requestBodies.count, 2)
+    }
+
+    func testAutomaticTokenOptionsPreserveCredentialUUIDAndTokenMode() {
+        let credentials = PronoteCredentials(
+            serverURL: "https://example.test/pronote/",
+            username: "student",
+            password: "synthetic-mobile-token",
+            usesMobileToken: true,
+            mobileUUID: "stable-device-id"
+        )
+
+        let options = PronoteLoginOptions.automaticReconnection(for: credentials)
+
+        XCTAssertFalse(options.useENT)
+        XCTAssertEqual(options.mobileUUID, "stable-device-id")
+        XCTAssertEqual(options.clientIdentifier, "stable-device-id")
+        XCTAssertEqual(options.mobileToken, "synthetic-mobile-token")
+        XCTAssertFalse(options.requestFirstMobileAuthentication)
+        XCTAssertFalse(options.qrLogin)
+        XCTAssertTrue(options.automaticReconnection)
+    }
+
+    func testEmptyStoredTokenFailsWithNonSensitiveDiagnostic() async throws {
+        let temporaryIV = Data(repeating: 0x55, count: 16)
+        let sessionIV = PronoteCrypto.md5(temporaryIV)
+        let transport = AuthenticationFakeTransport(responses: [])
+        let (session, initial) = makeSession(
+            version: [2026, 2, 7],
+            temporaryIV: temporaryIV,
+            sessionIV: sessionIV
+        )
+
+        do {
+            _ = try await PronoteAuthenticator(transport: transport).authenticate(
+                credentials: PronoteCredentials(
+                    serverURL: "https://example.test/pronote/",
+                    username: "student",
+                    password: "",
+                    usesMobileToken: true,
+                    mobileUUID: "stable-device-id"
+                ),
+                session: session,
+                initial: initial,
+                options: PronoteLoginOptions(
+                    mobileUUID: "stable-device-id",
+                    clientIdentifier: "stable-device-id",
+                    mobileToken: "",
+                    automaticReconnection: true
+                )
+            )
+            XCTFail("An empty stored mobile token must not fall back to password mode")
+        } catch let error as PronoteLoginDiagnosticError {
+            XCTAssertEqual(error.stage, .automaticReconnection)
+            XCTAssertEqual(error.operation, .identification)
+            XCTAssertTrue(error.localizedDescription.contains("jetonPrésent=false"))
+            XCTAssertTrue(error.localizedDescription.contains("UUIDPrésent=true"))
+        }
+        XCTAssertTrue(transport.requestBodies.isEmpty)
     }
 
     func testENTMobileTokenLoginAuthenticatesBeforeReturningCredentials() async throws {
@@ -371,11 +439,11 @@ final class PronoteAuthenticationProtocolTests: XCTestCase {
         XCTAssertEqual(identification["identifiant"] as? String, "ent-student")
         XCTAssertEqual(identification["pourENT"] as? Bool, false)
         XCTAssertEqual(identification["enConnexionAppliMobile"] as? Bool, true)
+        XCTAssertEqual(identification["demandeConnexionAppliMobile"] as? Bool, false)
         XCTAssertEqual(identification["uuidAppliMobile"] as? String, "stable-device-id")
-        XCTAssertEqual(authentication["identifiant"] as? String, "ent-student")
-        XCTAssertEqual(authentication["pourENT"] as? Bool, false)
-        XCTAssertEqual(authentication["enConnexionAppliMobile"] as? Bool, true)
-        XCTAssertEqual(authentication["uuidAppliMobile"] as? String, "stable-device-id")
+        XCTAssertEqual(identification["loginTokenSAV"] as? String, "")
+        XCTAssertNil(authentication["enConnexionAppliMobile"])
+        XCTAssertNil(authentication["uuidAppliMobile"])
         XCTAssertEqual(
             authentication["challenge"] as? String,
             transport.expectedChallenge
@@ -402,6 +470,101 @@ final class PronoteAuthenticationProtocolTests: XCTestCase {
             XCTAssertTrue(error.message.contains("code 1"))
         }
         XCTAssertEqual(transport.requestBodies.count, 3)
+    }
+
+    func testENTLoginDoesNotReturnTemporaryTokenWhenServerOmitsRefreshedToken() async throws {
+        let transport = ENTMobileTokenFakeTransport(
+            returnedMobileToken: nil,
+            tokenUsedForLogin: "temporary-ent-token"
+        )
+
+        do {
+            _ = try await LivePronoteClient.loginWithENTMobileToken(
+                serverURL: "https://example.test/pronote/",
+                username: "ent-student",
+                mobileToken: "temporary-ent-token",
+                accountKind: .student,
+                mobileUUID: "stable-device-id",
+                transport: transport
+            )
+            XCTFail("The temporary ENT token must not be persisted as a reconnect token")
+        } catch let error as PronoteLoginDiagnosticError {
+            XCTAssertEqual(error.stage, .mobileTokenRecovery)
+            XCTAssertTrue(error.localizedDescription.contains("n'a pas fourni de jeton mobile"))
+            XCTAssertFalse(error.localizedDescription.contains("temporary-ent-token"))
+        }
+    }
+
+    func testAutomaticReconnectionPersistsOnlyANonemptyRotatedToken() async throws {
+        let store = InMemorySecretStore()
+        let credentialStore = CredentialsStore(store: store)
+        let credentials = PronoteCredentials(
+            serverURL: "https://example.test/pronote/",
+            username: "ent-student",
+            password: "ent-mobile-token",
+            usesMobileToken: true,
+            mobileUUID: "stable-device-id"
+        )
+        try credentialStore.save(credentials)
+        let transport = ENTMobileTokenFakeTransport()
+        let client = LivePronoteClient(
+            credentials: credentials,
+            options: .automaticReconnection(for: credentials),
+            transport: transport,
+            onCredentialsUpdated: { updated in
+                try credentialStore.save(updated)
+            }
+        )
+
+        _ = try await client.profile()
+
+        let savedCredentials = try XCTUnwrap(credentialStore.load())
+        XCTAssertEqual(savedCredentials.password, "refreshed-mobile-token")
+        XCTAssertTrue(savedCredentials.usesMobileToken)
+        XCTAssertEqual(savedCredentials.mobileUUID, "stable-device-id")
+
+        let identification = try XCTUnwrap(
+            requestData(transport.requestBodies[1])
+        )
+        XCTAssertEqual(identification["enConnexionAppliMobile"] as? Bool, true)
+        XCTAssertEqual(identification["demandeConnexionAppliMobile"] as? Bool, false)
+        XCTAssertEqual(identification["uuidAppliMobile"] as? String, "stable-device-id")
+        XCTAssertEqual(identification["enConnexionAuto"] as? Bool, false)
+        XCTAssertEqual(identification["demandeConnexionAuto"] as? Bool, false)
+        XCTAssertEqual(identification["loginTokenSAV"] as? String, "")
+    }
+
+    func testAutomaticReconnectionKeepsStoredTokenWhenRefreshIsMissingOrEmpty() async throws {
+        let returnedTokens: [String?] = [nil, ""]
+        for returnedToken in returnedTokens {
+            let store = InMemorySecretStore()
+            let credentialStore = CredentialsStore(store: store)
+            let credentials = PronoteCredentials(
+                serverURL: "https://example.test/pronote/",
+                username: "ent-student",
+                password: "ent-mobile-token",
+                usesMobileToken: true,
+                mobileUUID: "stable-device-id"
+            )
+            try credentialStore.save(credentials)
+            let client = LivePronoteClient(
+                credentials: credentials,
+                options: .automaticReconnection(for: credentials),
+                transport: ENTMobileTokenFakeTransport(
+                    returnedMobileToken: returnedToken
+                ),
+                onCredentialsUpdated: { updated in
+                    try credentialStore.save(updated)
+                }
+            )
+
+            _ = try await client.profile()
+
+            let savedCredentials = try XCTUnwrap(credentialStore.load())
+            XCTAssertEqual(savedCredentials.password, "ent-mobile-token")
+            XCTAssertTrue(savedCredentials.usesMobileToken)
+            XCTAssertEqual(savedCredentials.mobileUUID, "stable-device-id")
+        }
     }
 
     func testQRCodeInitialLoginDoesNotUseStoredTokenReconnectionFlags() async throws {
@@ -530,12 +693,20 @@ final class PronoteAuthenticationProtocolTests: XCTestCase {
 
 private final class ENTMobileTokenFakeTransport: PronoteHTTPTransporting {
     private let authenticationAccessCode: Int
+    private let returnedMobileToken: String?
+    private let tokenUsedForLogin: String
     private var temporaryIV: Data?
     private(set) var requestBodies: [Data] = []
     private(set) var expectedChallenge = ""
 
-    init(authenticationAccessCode: Int = 0) {
+    init(
+        authenticationAccessCode: Int = 0,
+        returnedMobileToken: String? = "refreshed-mobile-token",
+        tokenUsedForLogin: String = "ent-mobile-token"
+    ) {
         self.authenticationAccessCode = authenticationAccessCode
+        self.returnedMobileToken = returnedMobileToken
+        self.tokenUsedForLogin = tokenUsedForLogin
     }
 
     func bootstrap(
@@ -601,7 +772,13 @@ private final class ENTMobileTokenFakeTransport: PronoteHTTPTransporting {
                 throw PronoteAuthenticationError.invalidResponse
             }
             let sessionIV = PronoteCrypto.md5(temporaryIV)
-            let tokenKey = PronoteCrypto.aesKey(fromSeed: Data("ent-mobile-token".utf8))
+            let tokenKey = PronoteCrypto.deriveLoginKeys(
+                username: "ent-student",
+                password: tokenUsedForLogin,
+                alea: "test-alea",
+                ivTemp: temporaryIV,
+                isENT: false
+            ).authKey
             let encryptedChallenge = try PronoteCrypto.aesCBCEncrypt(
                 Data("ent-mobile-challenge".utf8),
                 key: tokenKey,
@@ -617,7 +794,9 @@ private final class ENTMobileTokenFakeTransport: PronoteHTTPTransporting {
                         iv: sessionIV
                     )
                 )
-                data["jetonConnexionAppliMobile"] = "refreshed-mobile-token"
+                if let returnedMobileToken {
+                    data["jetonConnexionAppliMobile"] = returnedMobileToken
+                }
             }
             return try Self.json(["dataSec": ["data": data]])
 
