@@ -2,6 +2,48 @@ import XCTest
 @testable import WakeSchool
 
 final class PronoteSessionClientTests: XCTestCase {
+    func testHomeworkAttachmentUsesAuthenticatedSessionURL() async throws {
+        let transport = SessionRequestFakeTransport()
+        let session = PronoteAuthenticationResult(
+            sessionID: "synthetic-session",
+            spaceID: 3,
+            rootURL: URL(string: "https://example.test/pronote/")!,
+            version: [2026, 2, 7],
+            requestNumber: 3,
+            sessionKey: Data(repeating: 0x11, count: 16),
+            sessionIV: Data(repeating: 0x22, count: 16),
+            requestsAreEncrypted: false,
+            requestsAreCompressed: false,
+            userName: nil,
+            mobileToken: nil,
+            initialParameters: nil
+        )
+        let attachment = HomeworkAttachment(
+            protocolID: "synthetic-document",
+            name: "fiche de travail.pdf",
+            kind: .file,
+            linkURL: nil
+        )
+
+        let data = try await PronoteSessionClient(
+            transport: transport,
+            session: session
+        ).downloadHomeworkAttachment(attachment)
+
+        XCTAssertEqual(data, Data("synthetic-file-content".utf8))
+        let url = try XCTUnwrap(transport.downloadURL)
+        XCTAssertEqual(url.host, "example.test")
+        XCTAssertTrue(url.path.contains("/FichiersExternes/"))
+        XCTAssertTrue(url.path.hasSuffix("/fiche de travail.pdf"))
+        XCTAssertEqual(
+            URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?
+                .first(where: { $0.name == "Session" })?
+                .value,
+            "synthetic-session"
+        )
+    }
+
     func testDataRequestsUsePronoteStudentAndPeriodPayloads() async throws {
         let transport = SessionRequestFakeTransport()
         let session = PronoteAuthenticationResult(
@@ -91,6 +133,7 @@ final class PronoteSessionClientTests: XCTestCase {
 
 private final class SessionRequestFakeTransport: PronoteHTTPTransporting {
     private(set) var requests: [[String: Any]] = []
+    private(set) var downloadURL: URL?
 
     func bootstrap(
         serverURL: String,
@@ -109,5 +152,10 @@ private final class SessionRequestFakeTransport: PronoteHTTPTransporting {
         }
         requests.append(request)
         return try JSONSerialization.data(withJSONObject: ["dataSec": [:]])
+    }
+
+    func download(from url: URL) async throws -> Data {
+        downloadURL = url
+        return Data("synthetic-file-content".utf8)
     }
 }

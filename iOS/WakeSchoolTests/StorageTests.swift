@@ -57,6 +57,27 @@ final class StorageTests: XCTestCase {
     }
 
     @MainActor
+    func testHomeworkAttachmentsSurviveStorageRoundTripAndDoneState() async throws {
+        let repository = try makeRepository()
+        var snapshot = try await demoSnapshot()
+        let attachment = HomeworkAttachment(
+            protocolID: "synthetic-file",
+            name: "worksheet.pdf",
+            kind: .file,
+            linkURL: nil
+        )
+        snapshot.homework[0].attachments = [attachment]
+        try repository.save(snapshot)
+        try repository.setHomework(snapshot.homework[0].id, done: true)
+
+        let reloaded = try XCTUnwrap(
+            repository.loadSnapshot().homework.first { $0.id == snapshot.homework[0].id }
+        )
+        XCTAssertEqual(reloaded.attachments, [attachment])
+        XCTAssertTrue(reloaded.isDone)
+    }
+
+    @MainActor
     func testClear() async throws {
         let repository = try makeRepository()
         try repository.save(try await demoSnapshot())

@@ -10,6 +10,7 @@ final class LivePronoteClient: PronoteClient, PronoteDataDiagnosticsReporting {
 
     private var sessionClient: PronoteSessionClient?
     private var resource: [String: Any]?
+    private var hasLoadedUserParameters = false
     private var periods: [[String: Any]] = []
     private var schoolYearStart: Date?
     private var schoolDayEndTimes: [[String: Any]] = []
@@ -385,10 +386,21 @@ final class LivePronoteClient: PronoteClient, PronoteDataDiagnosticsReporting {
                 )
 
             rawCount += PronoteMapper.rawGradesCount(from: response)
-            grades.append(contentsOf: PronoteMapper.grades(from: response))
+            let mapping = PronoteMapper.gradeMapping(from: response)
+            for (reason, count) in mapping.rejectedCounts {
+                dataDiagnostics.grades.rejectedCounts[reason, default: 0] += count
+            }
+            grades.append(contentsOf: mapping.grades)
         }
 
         let result = deduplicate(grades)
+        let duplicatesAcrossPeriods = grades.count - result.count
+        if duplicatesAcrossPeriods > 0 {
+            dataDiagnostics.grades.rejectedCounts[
+                PronoteGradeRejection.duplicate.rawValue,
+                default: 0
+            ] += duplicatesAcrossPeriods
+        }
         dataDiagnostics.grades.callStatus = .succeeded
         dataDiagnostics.grades.rawCount = rawCount
         dataDiagnostics.grades.convertedCount = result.count
@@ -421,6 +433,11 @@ final class LivePronoteClient: PronoteClient, PronoteDataDiagnosticsReporting {
             try await connectedClient()
 
         return client.mobileToken
+    }
+
+    func downloadHomeworkAttachment(_ attachment: HomeworkAttachment) async throws -> Data {
+        let client = try await connectedClient()
+        return try await client.downloadHomeworkAttachment(attachment)
     }
 
     // MARK: - Connection
@@ -562,6 +579,7 @@ final class LivePronoteClient: PronoteClient, PronoteDataDiagnosticsReporting {
             from: response,
             accountKind: credentials.accountKind
         ) ?? resource
+        hasLoadedUserParameters = true
 
         if periods.isEmpty {
             periods = PronoteMapper.periods(from: response)
@@ -659,6 +677,8 @@ final class LivePronoteClient: PronoteClient, PronoteDataDiagnosticsReporting {
     func resetDataDiagnostics() {
         var fresh = PronoteSyncDiagnostics()
         fresh.authenticationSucceeded = sessionClient != nil
+        fresh.userParametersRetrieved = hasLoadedUserParameters
+        fresh.studentResourceIdentified = resource?["N"] != nil
         fresh.schoolPeriodIdentified = !periods.isEmpty && schoolYearStart != nil
         dataDiagnostics = fresh
     }

@@ -216,6 +216,47 @@ final class PronoteSessionClient {
         )
     }
 
+    func downloadHomeworkAttachment(
+        _ attachment: HomeworkAttachment
+    ) async throws -> Data {
+        guard attachment.kind == .file,
+              !attachment.protocolID.isEmpty,
+              !attachment.name.isEmpty else {
+            throw PronoteTransportError.attachmentUnavailable
+        }
+        let idData = try JSONSerialization.data(
+            withJSONObject: [attachment.protocolID],
+            options: [.fragmentsAllowed]
+        )
+        guard let quotedID = String(data: idData, encoding: .utf8),
+              quotedID.count >= 2 else {
+            throw PronoteTransportError.attachmentUnavailable
+        }
+        let idLiteral = quotedID.dropFirst().dropLast()
+        let encryptedDocumentID = try PronoteCrypto.aesCBCEncrypt(
+            Data("{\"N\":\(idLiteral),\"Actif\":true}".utf8),
+            key: session.sessionKey,
+            iv: session.sessionIV
+        )
+        let path = session.rootURL
+            .appendingPathComponent("FichiersExternes")
+            .appendingPathComponent(PronoteCrypto.hexString(from: encryptedDocumentID))
+            .appendingPathComponent(attachment.name)
+        guard var components = URLComponents(
+            url: path,
+            resolvingAgainstBaseURL: false
+        ) else {
+            throw PronoteTransportError.attachmentUnavailable
+        }
+        components.queryItems = [
+            URLQueryItem(name: "Session", value: session.sessionID)
+        ]
+        guard let url = components.url else {
+            throw PronoteTransportError.attachmentUnavailable
+        }
+        return try await transport.download(from: url)
+    }
+
     private static func signature(
         onglet: Int,
         resource: [String: Any]

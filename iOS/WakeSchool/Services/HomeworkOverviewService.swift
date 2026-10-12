@@ -12,6 +12,13 @@ struct HomeworkSections: Equatable {
     var completion: Double { total == 0 ? 0 : Double(done.count) / Double(total) }
 }
 
+struct HomeworkDayGroup: Identifiable, Equatable {
+    let date: Date
+    let items: [Homework]
+
+    var id: Date { date }
+}
+
 enum HomeworkOverviewService {
     static func sections(from homework: [Homework], now: Date) -> HomeworkSections {
         let overdue = HomeworkService.overdue(homework, now: now)
@@ -20,5 +27,16 @@ enum HomeworkOverviewService {
         return HomeworkSections(overdue: overdue,
                                 upcoming: upcoming,
                                 done: HomeworkService.completed(homework))
+    }
+
+    static func groupedByDueDate(
+        _ homework: [Homework],
+        calendar: Calendar = .current
+    ) -> [HomeworkDayGroup] {
+        Dictionary(grouping: homework, by: {
+            calendar.startOfDay(for: $0.dueDate)
+        })
+        .map { HomeworkDayGroup(date: $0.key, items: $0.value.sorted { $0.dueDate < $1.dueDate }) }
+        .sorted { $0.date < $1.date }
     }
 }

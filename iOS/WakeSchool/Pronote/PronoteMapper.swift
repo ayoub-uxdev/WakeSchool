@@ -7,6 +7,18 @@ struct PronoteProfile: Codable, Equatable {
     var schoolName: String?
 }
 
+struct PronoteGradeMappingResult {
+    let grades: [Grade]
+    let rejectedCounts: [String: Int]
+}
+
+enum PronoteGradeRejection: String {
+    case missingOrInvalidValue = "valeur absente ou invalide"
+    case missingOrInvalidDate = "date absente ou invalide"
+    case missingSubject = "matière absente"
+    case duplicate = "doublon"
+}
+
 enum PronoteMapperError: Error, LocalizedError {
     case invalidResponse(String)
     var errorDescription: String? {
@@ -151,20 +163,54 @@ enum PronoteMapper {
             let subjectName = extractName(subjectValue) ?? "Matière"
             let subject = Subject(id: stableID(prefix: "subject", value: extractID(subjectValue) ?? subjectName), name: subjectName)
             let title = PronoteJSON.string(findValue(in: item, keys: ["titre", "title", "nom"])) ?? "Devoir"
-            let details = PronoteJSON.string(findValue(in: item, keys: ["description", "Description", "contenu", "texte", "travail"])) ?? ""
+            let rawDetails = PronoteJSON.string(findValue(in: item, keys: ["description", "Description", "contenu", "texte", "travail"])) ?? ""
+            let details = HomeworkDescriptionFormatter.plainText(from: rawDetails)
             let done = PronoteJSON.bool(findValue(in: item, keys: ["fait", "estFait", "done"])) ?? false
-            let priority: HomeworkPriority = (PronoteJSON.bool(findValue(in: item, keys: ["urgent", "prioritaire"])) == true) ? .high : .normal
+            let priority = HomeworkPriority.unspecified
             let rawID = extractID(item) ?? "\(subjectName)|\(title)|\(due.timeIntervalSince1970)|\(details)"
             let id = stableID(prefix: "homework", value: rawID)
             guard seen.insert(id).inserted else { continue }
-            result.append(Homework(id: id, subject: subject, title: title, details: details, dueDate: due, isDone: done, priority: priority))
+            result.append(Homework(
+                id: id,
+                subject: subject,
+                title: title,
+                details: details,
+                dueDate: due,
+                isDone: done,
+                priority: priority,
+                attachments: protocolAttachments(from: item)
+            ))
         }
         return result.sorted { $0.dueDate < $1.dueDate }
     }
 
     static func grades(from response: Any) -> [Grade] {
+        gradeMapping(from: response).grades
+    }
+
+    static func gradeMapping(from response: Any) -> PronoteGradeMappingResult {
         if let items = protocolItems(from: response, keys: ["listeDevoirs"]) {
-            return items.compactMap(protocolGrade).sorted { $0.date > $1.date }
+            var grades: [Grade] = []
+            var rejected: [String: Int] = [:]
+            var seen = Set<UUID>()
+
+            for item in items {
+                guard let grade = protocolGrade(item) else {
+                    let reason = protocolGradeRejection(for: item)
+                    rejected[reason.rawValue, default: 0] += 1
+                    continue
+                }
+                guard seen.insert(grade.id).inserted else {
+                    rejected[PronoteGradeRejection.duplicate.rawValue, default: 0] += 1
+                    continue
+                }
+                grades.append(grade)
+            }
+
+            return PronoteGradeMappingResult(
+                grades: grades.sorted { $0.date > $1.date },
+                rejectedCounts: rejected
+            )
         }
 
         let root = PronoteJSON.unwrap(response)
@@ -175,22 +221,39 @@ enum PronoteMapper {
         }
 
         var result: [Grade] = []
+        var rejected: [String: Int] = [:]
         var seen = Set<UUID>()
         for item in items {
-            guard let value = PronoteJSON.number(findValue(in: item, keys: ["note", "Note", "valeur", "grade"])) else { continue }
+            guard let value = PronoteJSON.number(findValue(in: item, keys: ["note", "Note", "valeur", "grade"])) else {
+                rejected[PronoteGradeRejection.missingOrInvalidValue.rawValue, default: 0] += 1
+                continue
+            }
             let outOf = PronoteJSON.number(findValue(in: item, keys: ["noteSur", "sur", "bareme", "outOf"])) ?? 20
             let coefficient = PronoteJSON.number(findValue(in: item, keys: ["coef", "coefficient", "Coeff"])) ?? 1
-            let date = PronoteJSON.date(findValue(in: item, keys: ["date", "Date"])) ?? Date()
+            guard let date = PronoteJSON.date(findValue(in: item, keys: ["date", "Date"])) else {
+                rejected[PronoteGradeRejection.missingOrInvalidDate.rawValue, default: 0] += 1
+                continue
+            }
             let subjectValue = findValue(in: item, keys: ["matiere", "Matiere", "subject"])
+            guard subjectValue != nil else {
+                rejected[PronoteGradeRejection.missingSubject.rawValue, default: 0] += 1
+                continue
+            }
             let subjectName = extractName(subjectValue) ?? "Matière"
             let subject = Subject(id: stableID(prefix: "subject", value: extractID(subjectValue) ?? subjectName), name: subjectName)
             let title = PronoteJSON.string(findValue(in: item, keys: ["devoir", "titre", "title", "nom"]))
             let rawID = extractID(item) ?? "\(subjectName)|\(value)|\(outOf)|\(date.timeIntervalSince1970)|\(title ?? "")"
             let id = stableID(prefix: "grade", value: rawID)
-            guard seen.insert(id).inserted else { continue }
+            guard seen.insert(id).inserted else {
+                rejected[PronoteGradeRejection.duplicate.rawValue, default: 0] += 1
+                continue
+            }
             result.append(Grade(id: id, subject: subject, value: value, outOf: outOf, coefficient: coefficient, date: date, title: title))
         }
-        return result.sorted { $0.date > $1.date }
+        return PronoteGradeMappingResult(
+            grades: result.sorted { $0.date > $1.date },
+            rejectedCounts: rejected
+        )
     }
 
     static func rawTimetableCount(from response: Any) -> Int {
@@ -331,11 +394,39 @@ enum PronoteMapper {
             id: stableID(prefix: "homework", value: rawID),
             subject: subject,
             title: title,
-            details: details,
+            details: HomeworkDescriptionFormatter.plainText(from: details),
             dueDate: due,
             isDone: PronoteJSON.bool(item["TAFFait"]) ?? false,
-            priority: .normal
+            priority: .unspecified,
+            attachments: protocolAttachments(from: item)
         )
+    }
+
+    private static func protocolAttachments(
+        from homework: [String: Any]
+    ) -> [HomeworkAttachment] {
+        guard let wrapped = homework["ListePieceJointe"] as? [String: Any],
+              let values = wrapped["V"] as? [[String: Any]] else {
+            return []
+        }
+
+        return values.compactMap { item in
+            guard let protocolID = PronoteJSON.string(item["N"]),
+                  let name = PronoteJSON.string(item["L"]) else {
+                return nil
+            }
+            let rawType = PronoteJSON.number(item["G"])
+            let kind = rawType.flatMap { HomeworkAttachment.Kind(rawValue: Int($0)) } ?? .unsupported
+            let linkURL = kind == .link
+                ? (PronoteJSON.string(item["url"]) ?? name)
+                : nil
+            return HomeworkAttachment(
+                protocolID: protocolID,
+                name: name,
+                kind: kind,
+                linkURL: linkURL
+            )
+        }
     }
 
     private static func protocolGrade(
@@ -346,6 +437,7 @@ enum PronoteMapper {
               let subjectValue = (item["service"] as? [String: Any])?["V"] ?? item["service"] else {
             return nil
         }
+
         let outOf = PronoteJSON.number(item["bareme"]) ?? 20
         let coefficient = PronoteJSON.number(item["coefficient"]) ?? 1
         let subjectName = extractName(subjectValue) ?? "Matière"
@@ -364,6 +456,22 @@ enum PronoteMapper {
             date: date,
             title: title
         )
+    }
+
+    private static func protocolGradeRejection(
+        for item: [String: Any]
+    ) -> PronoteGradeRejection {
+        guard PronoteJSON.number(item["note"]) != nil else {
+            return .missingOrInvalidValue
+        }
+        guard PronoteJSON.date(item["date"]) != nil else {
+            return .missingOrInvalidDate
+        }
+        guard let subject = (item["service"] as? [String: Any])?["V"] ?? item["service"],
+              extractName(subject) != nil else {
+            return .missingSubject
+        }
+        return .missingOrInvalidValue
     }
 
     private static func collectDictionaries(_ value: Any) -> [[String: Any]] {

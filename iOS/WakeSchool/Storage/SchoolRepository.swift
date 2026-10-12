@@ -29,7 +29,7 @@ final class SwiftDataSchoolRepository: SchoolRepository {
     func loadSnapshot() throws -> SchoolSnapshot {
         SchoolSnapshot(
             timetable: ScheduleService.sorted(try context.fetch(FetchDescriptor<StoredCourse>()).map { $0.entry }),
-            homework: HomeworkService.sorted(try context.fetch(FetchDescriptor<StoredHomework>()).map { $0.homework }),
+            homework: HomeworkService.sorted(try context.fetch(FetchDescriptor<StoredHomework>()).map { try $0.homework() }),
             grades: try context.fetch(FetchDescriptor<StoredGrade>()).map { $0.grade }.sorted { $0.date > $1.date },
             averages: try context.fetch(FetchDescriptor<StoredAverage>()).map { $0.subjectAverage }
                 .sorted { $0.subject.name < $1.subject.name },
@@ -47,8 +47,11 @@ final class SwiftDataSchoolRepository: SchoolRepository {
         try deleteAll()
 
         snapshot.timetable.forEach { context.insert(StoredCourse($0)) }
-        snapshot.homework.forEach {
-            context.insert(StoredHomework($0, isDone: $0.isDone || (localDone[$0.id] ?? false)))
+        for homework in snapshot.homework {
+            context.insert(try StoredHomework(
+                homework,
+                isDone: homework.isDone || (localDone[homework.id] ?? false)
+            ))
         }
         snapshot.grades.forEach { context.insert(StoredGrade($0)) }
         snapshot.averages.forEach { context.insert(StoredAverage($0)) }

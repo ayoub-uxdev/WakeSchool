@@ -129,6 +129,13 @@ struct DashboardView: View {
             diagnosticLine("Appel \(title.lowercased())", value: data.callStatus.rawValue)
             diagnosticLine("\(title) bruts / convertis", value: "\(data.rawCount) / \(data.convertedCount)")
             diagnosticLine("\(title) enregistrés / affichés", value: "\(data.savedCount) / \(data.displayedCount)")
+            if !data.rejectedCounts.isEmpty {
+                let categories = data.rejectedCounts
+                    .sorted { $0.key < $1.key }
+                    .map { "\($0.key): \($0.value)" }
+                    .joined(separator: " · ")
+                diagnosticLine("\(title) ignorés par catégorie", value: categories)
+            }
             if let stage = data.errorStage,
                let code = data.errorCode {
                 diagnosticLine("Erreur \(title.lowercased())", value: "\(stage) · \(code)")

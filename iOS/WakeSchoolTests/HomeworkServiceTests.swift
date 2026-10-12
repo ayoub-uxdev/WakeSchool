@@ -37,6 +37,20 @@ final class HomeworkServiceTests: XCTestCase {
         XCTAssertEqual(HomeworkService.sorted(items).map(\.title), ["Haute", "Basse"])
     }
 
+    func testGroupsHomeworkByCalendarDayAndSortsGroups() {
+        let items = [
+            T.homework("Après", due: T.date(9, 11)),
+            T.homework("Avant", due: T.date(8, 12)),
+            T.homework("Même jour", due: T.date(8, 8))
+        ]
+
+        let groups = HomeworkOverviewService.groupedByDueDate(items, calendar: T.calendar)
+
+        XCTAssertEqual(groups.map(\.date), [T.date(8), T.date(9)])
+        XCTAssertEqual(groups[0].items.map(\.title), ["Même jour", "Avant"])
+        XCTAssertEqual(groups[1].items.map(\.title), ["Après"])
+    }
+
     func testFilterBySubject() {
         XCTAssertEqual(HomeworkService.forSubject(T.french, in: sample()).map(\.title), ["Plus tard"])
     }

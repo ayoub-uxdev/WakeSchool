@@ -67,6 +67,8 @@ enum PronoteTransportError: Error, Equatable, LocalizedError {
     case sessionParametersNotFound
     case missingPageVersion
     case invalidSessionParameter(String)
+    case attachmentUnavailable
+    case attachmentDownloadUnsupported
     case pronoteError(Int, String)
 
     var errorDescription: String? {
@@ -78,6 +80,8 @@ enum PronoteTransportError: Error, Equatable, LocalizedError {
         case .sessionParametersNotFound: return "Impossible de trouver les paramètres de session PRONOTE dans la page HTML."
         case .missingPageVersion: return "La version PRONOTE est absente de la page de connexion."
         case .invalidSessionParameter(let name): return "Le paramètre de session PRONOTE \(name) est invalide."
+        case .attachmentUnavailable: return "Ce document PRONOTE n'est plus disponible."
+        case .attachmentDownloadUnsupported: return "Le téléchargement de documents n'est pas disponible pour cette source."
         case .pronoteError(let code, let message): return "PRONOTE a refusé la requête (\(code)) : \(message)"
         }
     }
@@ -89,6 +93,13 @@ protocol PronoteHTTPTransporting {
         accountKind: PronoteAccountKind
     ) async throws -> PronoteSessionParameters
     func post(to url: URL, body: Data, additionalHeaders: [String: String]) async throws -> Data
+    func download(from url: URL) async throws -> Data
+}
+
+extension PronoteHTTPTransporting {
+    func download(from url: URL) async throws -> Data {
+        throw PronoteTransportError.attachmentDownloadUnsupported
+    }
 }
 
 final class PronoteHTTPTransport: PronoteHTTPTransporting {
@@ -164,6 +175,28 @@ final class PronoteHTTPTransport: PronoteHTTPTransporting {
            code != 0 {
             let message = (error["Titre"] as? String) ?? "Erreur inconnue"
             throw PronoteTransportError.pronoteError(code, message)
+        }
+        return data
+    }
+
+    func download(from url: URL) async throws -> Data {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue(Self.pronoteMobileUserAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(Self.mobileAccountCookie, forHTTPHeaderField: "Cookie")
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw PronoteTransportError.invalidHTTPResponse
+        }
+        guard http.statusCode != 404, http.statusCode != 410 else {
+            throw PronoteTransportError.attachmentUnavailable
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw PronoteTransportError.httpStatus(http.statusCode)
+        }
+        guard !data.isEmpty else {
+            throw PronoteTransportError.attachmentUnavailable
         }
         return data
     }
@@ -390,7 +423,7 @@ final class PronoteHTTPTransport: PronoteHTTPTransporting {
         in object: String
     ) -> String? {
         let pattern =
-            #"(?i)["']?\#(NSRegularExpression.escapedPattern(for: name))["']?\s*:\s*(?:"([^"]*)"|'([^']*)'|(-?\d+)|([A-Za-z]+))"#
+            #"(?i)(?<![A-Za-z0-9_$])["']?\#(NSRegularExpression.escapedPattern(for: name))["']?(?![A-Za-z0-9_$])\s*:\s*(?:"([^"]*)"|'([^']*)'|(-?\d+)|([A-Za-z]+))"#
         guard let match = firstMatch(pattern, in: object) else {
             return nil
         }

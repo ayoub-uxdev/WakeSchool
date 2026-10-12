@@ -12,6 +12,7 @@ struct PronoteDatasetDiagnostics {
     var convertedCount = 0
     var savedCount = 0
     var displayedCount = 0
+    var rejectedCounts: [String: Int] = [:]
     var errorStage: String?
     var errorCode: String?
 }
@@ -74,6 +75,10 @@ struct PronoteSyncDiagnostics {
                 return "MISSING_PAGE_VERSION"
             case .invalidSessionParameter(_):
                 return "INVALID_SESSION_PARAMETER"
+            case .attachmentUnavailable:
+                return "ATTACHMENT_UNAVAILABLE"
+            case .attachmentDownloadUnsupported:
+                return "ATTACHMENT_DOWNLOAD_UNSUPPORTED"
             }
         case let error as PronoteLiveError:
             switch error {
@@ -118,7 +123,7 @@ protocol PronoteDataDiagnosticsReporting {
 protocol SchoolSyncDiagnosticsReporting: PronoteDataDiagnosticsReporting {
 }
 
-struct PronoteSchoolDataProvider: SchoolDataProvider, SchoolSyncDiagnosticsReporting {
+struct PronoteSchoolDataProvider: SchoolDataProvider, SchoolSyncDiagnosticsReporting, HomeworkAttachmentDownloading {
     let client: PronoteClient
 
     var dataDiagnostics: PronoteSyncDiagnostics {
@@ -148,5 +153,12 @@ struct PronoteSchoolDataProvider: SchoolDataProvider, SchoolSyncDiagnosticsRepor
 
     func events() async throws -> [SchoolEvent] {
         []
+    }
+
+    func downloadHomeworkAttachment(_ attachment: HomeworkAttachment) async throws -> Data {
+        guard let client = client as? LivePronoteClient else {
+            throw PronoteTransportError.attachmentDownloadUnsupported
+        }
+        return try await client.downloadHomeworkAttachment(attachment)
     }
 }

@@ -34,6 +34,16 @@ enum HomeworkPriority: Int, Codable, Hashable, Comparable {
     case low = 0
     case normal = 1
     case high = 2
+    case unspecified = 3
+
+    var displayLabel: String {
+        switch self {
+        case .low: return "Peu important"
+        case .normal: return "Importance normale"
+        case .high: return "Important"
+        case .unspecified: return "Importance non renseignée"
+        }
+    }
 
     static func < (lhs: HomeworkPriority, rhs: HomeworkPriority) -> Bool {
         lhs.rawValue < rhs.rawValue
@@ -47,7 +57,23 @@ struct Homework: Identifiable, Codable, Hashable {
     var details: String
     var dueDate: Date
     var isDone: Bool = false
-    var priority: HomeworkPriority = .normal
+    var priority: HomeworkPriority = .unspecified
+    var attachments: [HomeworkAttachment] = []
+}
+
+struct HomeworkAttachment: Identifiable, Codable, Hashable {
+    enum Kind: Int, Codable {
+        case link = 0
+        case file = 1
+        case unsupported = -1
+    }
+
+    let protocolID: String
+    let name: String
+    let kind: Kind
+    let linkURL: String?
+
+    var id: String { "\(protocolID):\(kind.rawValue)" }
 }
 
 // MARK: - Notes et moyennes

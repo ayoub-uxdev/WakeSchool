@@ -88,7 +88,13 @@ final class PronoteMapperTests: XCTestCase {
                                 "descriptif": ["V": "Exercices 1 à 4"],
                                 "TAFFait": false,
                                 "PourLe": ["V": "16/10/2026"],
-                                "Matiere": ["V": ["N": "subject-1", "L": "Sciences"]]
+                                "Matiere": ["V": ["N": "subject-1", "L": "Sciences"]],
+                                "ListePieceJointe": [
+                                    "V": [
+                                        ["N": "file-1", "L": "fiche.pdf", "G": 1],
+                                        ["N": "link-1", "L": "Ressource", "G": 0, "url": "https://example.test/resource"]
+                                    ]
+                                ]
                             ]
                         ]
                     ]
@@ -103,6 +109,48 @@ final class PronoteMapperTests: XCTestCase {
         XCTAssertEqual(homework[0].subject.name, "Sciences")
         XCTAssertEqual(homework[0].details, "Exercices 1 à 4")
         XCTAssertFalse(homework[0].isDone)
+        XCTAssertEqual(homework[0].priority, .unspecified)
+        XCTAssertEqual(homework[0].attachments.count, 2)
+        XCTAssertEqual(homework[0].attachments[0].kind, .file)
+        XCTAssertEqual(homework[0].attachments[1].kind, .link)
+        XCTAssertEqual(homework[0].attachments[1].linkURL, "https://example.test/resource")
+    }
+
+    func testMapsProtocolHomeworkHTMLToReadableText() throws {
+        let longParagraph = String(repeating: "contenu détaillé ", count: 40)
+        let response: [String: Any] = [
+            "dataSec": [
+                "data": [
+                    "ListeTravauxAFaire": [
+                        "V": [
+                            [
+                                "N": "homework-html",
+                                "descriptif": [
+                                    "V": """
+                                    <div><p>Lire <strong>attentivement</strong> &amp; noter.</p>\
+                                    <ul><li>Première partie</li><li>Deuxième partie</li></ul>\
+                                    <p>\(longParagraph)</p></div>
+                                    """
+                                ],
+                                "TAFFait": false,
+                                "PourLe": ["V": "16/10/2026"],
+                                "Matiere": ["V": ["N": "subject-1", "L": "Sciences"]]
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        ]
+
+        let homework = try XCTUnwrap(PronoteMapper.homework(from: response).first)
+
+        XCTAssertFalse(homework.details.contains("<"))
+        XCTAssertTrue(homework.details.contains("attentivement"))
+        XCTAssertTrue(homework.details.contains("& noter."))
+        XCTAssertTrue(homework.details.contains("Première partie"))
+        XCTAssertTrue(homework.details.contains("Deuxième partie"))
+        XCTAssertTrue(homework.details.contains("contenu détaillé"))
+        XCTAssertGreaterThan(homework.details.count, 500)
     }
 
     func testMapsProtocolGradeItemsAndReportsRawCount() throws {
@@ -136,6 +184,43 @@ final class PronoteMapperTests: XCTestCase {
         XCTAssertEqual(grades[0].coefficient, 2)
         XCTAssertEqual(grades[0].subject.name, "Histoire")
         XCTAssertEqual(grades[0].title, "Évaluation")
+    }
+
+    func testGradeMappingReportsOnlySafeRejectionCategories() {
+        let response: [String: Any] = [
+            "dataSec": [
+                "data": [
+                    "listeDevoirs": [
+                        "V": [
+                            [
+                                "N": "valid-grade",
+                                "note": ["V": "14"],
+                                "bareme": ["V": "20"],
+                                "date": ["V": "09/10/2026"],
+                                "service": ["V": ["N": "subject-1", "L": "Histoire"]]
+                            ],
+                            [
+                                "N": "missing-value",
+                                "date": ["V": "09/10/2026"],
+                                "service": ["V": ["N": "subject-1", "L": "Histoire"]]
+                            ],
+                            [
+                                "N": "missing-date",
+                                "note": ["V": "synthetic-grade-value"],
+                                "service": ["V": ["N": "subject-1", "L": "Histoire"]]
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        ]
+
+        let result = PronoteMapper.gradeMapping(from: response)
+
+        XCTAssertEqual(result.grades.count, 1)
+        XCTAssertEqual(result.rejectedCounts[PronoteGradeRejection.missingOrInvalidValue.rawValue], 1)
+        XCTAssertEqual(result.rejectedCounts[PronoteGradeRejection.missingOrInvalidDate.rawValue], 1)
+        XCTAssertFalse(result.rejectedCounts.description.contains("synthetic-grade-value"))
     }
 
     func testExtractsStudentResourceAndPeriodsWithoutExposingValuesInDiagnostics() throws {

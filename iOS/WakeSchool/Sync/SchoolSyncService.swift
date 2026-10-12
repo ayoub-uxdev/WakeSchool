@@ -25,6 +25,13 @@ final class SchoolSyncService {
         try repository.loadSnapshot()
     }
 
+    func downloadHomeworkAttachment(_ attachment: HomeworkAttachment) async throws -> Data {
+        guard let downloader = provider as? HomeworkAttachmentDownloading else {
+            throw PronoteTransportError.attachmentDownloadUnsupported
+        }
+        return try await downloader.downloadHomeworkAttachment(attachment)
+    }
+
     /// Récupère les données, les persiste, puis renvoie l'état local à jour.
     @discardableResult
     func sync() async throws -> SchoolSnapshot {

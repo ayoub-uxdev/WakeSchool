@@ -180,6 +180,7 @@ struct HomeworkRow: View {
     let homework: Homework
     let now: Date
     let onToggle: (Bool) -> Void
+    var onOpen: () -> Void = {}
 
     private var isOverdue: Bool { !homework.isDone && homework.dueDate < now }
 
@@ -197,15 +198,24 @@ struct HomeworkRow: View {
 
             VStack(alignment: .leading, spacing: 5) {
                 SubjectLabel(subject: homework.subject)
-                Text(homework.title)
-                    .font(.headline)
-                    .strikethrough(homework.isDone)
-                if !homework.details.isEmpty {
-                    Text(homework.details)
-                        .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.65))
-                        .lineLimit(2)
+                Button(action: onOpen) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(homework.title)
+                            .font(.headline)
+                            .strikethrough(homework.isDone)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if !homework.details.isEmpty {
+                            Text(homework.details)
+                                .font(.subheadline)
+                                .foregroundStyle(.white.opacity(0.65))
+                                .lineLimit(3)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityHint("Ouvre la description complète du devoir")
                 HStack(spacing: 8) {
                     Label(dueText, systemImage: isOverdue ? "exclamationmark.circle.fill" : "calendar")
                         .font(.caption.weight(.medium))
@@ -232,7 +242,9 @@ struct HomeworkRow: View {
         case .low:
             WakeBadge(text: "Basse", systemImage: "arrow.down", tint: .gray)
         case .normal:
-            EmptyView()
+            WakeBadge(text: homework.priority.displayLabel, systemImage: "minus.circle", tint: .gray)
+        case .unspecified:
+            WakeBadge(text: homework.priority.displayLabel, systemImage: "questionmark.circle", tint: .gray)
         }
     }
 }

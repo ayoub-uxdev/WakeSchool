@@ -59,8 +59,9 @@ final class StoredHomework {
     var dueDate: Date
     var isDone: Bool
     var priorityRaw: Int
+    var attachmentMetadata: Data?
 
-    init(_ homework: Homework, isDone: Bool) {
+    init(_ homework: Homework, isDone: Bool) throws {
         id = homework.id
         subjectID = homework.subject.id
         subjectName = homework.subject.name
@@ -69,16 +70,23 @@ final class StoredHomework {
         dueDate = homework.dueDate
         self.isDone = isDone
         priorityRaw = homework.priority.rawValue
+        attachmentMetadata = try JSONEncoder().encode(homework.attachments)
     }
 
-    var homework: Homework {
-        Homework(id: id,
-                 subject: Subject(id: subjectID, name: subjectName),
-                 title: title,
-                 details: details,
-                 dueDate: dueDate,
-                 isDone: isDone,
-                 priority: HomeworkPriority(rawValue: priorityRaw) ?? .normal)
+    func homework() throws -> Homework {
+        let attachments = try attachmentMetadata.map {
+            try JSONDecoder().decode([HomeworkAttachment].self, from: $0)
+        } ?? []
+        return Homework(
+            id: id,
+            subject: Subject(id: subjectID, name: subjectName),
+            title: title,
+            details: details,
+            dueDate: dueDate,
+            isDone: isDone,
+            priority: HomeworkPriority(rawValue: priorityRaw) ?? .unspecified,
+            attachments: attachments
+        )
     }
 }
 

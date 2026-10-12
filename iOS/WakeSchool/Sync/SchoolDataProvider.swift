@@ -11,6 +11,10 @@ protocol SchoolDataProvider {
     func events() async throws -> [SchoolEvent]
 }
 
+protocol HomeworkAttachmentDownloading {
+    func downloadHomeworkAttachment(_ attachment: HomeworkAttachment) async throws -> Data
+}
+
 extension SchoolDataProvider {
     /// Par défaut, les moyennes sont calculées localement à partir des notes.
     /// Un provider dont la source fournit ses propres moyennes peut surcharger cette méthode.

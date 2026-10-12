@@ -114,4 +114,8 @@ final class SchoolDataStore: ObservableObject {
             errorMessage = error.localizedDescription
         }
     }
+
+    func downloadHomeworkAttachment(_ attachment: HomeworkAttachment) async throws -> Data {
+        try await environment.sync.downloadHomeworkAttachment(attachment)
+    }
 }
