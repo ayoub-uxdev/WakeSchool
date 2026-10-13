@@ -4,6 +4,7 @@ import Foundation
 final class PreferencesStore {
     private enum Key {
         static let dataSource = "dataSource"
+        static let appearance = "appearance"
         static let travelMinutes = "wake.travelMinutes"
         static let preparationMinutes = "wake.preparationMinutes"
         static let safetyMarginMinutes = "wake.safetyMarginMinutes"
@@ -26,6 +27,20 @@ final class PreferencesStore {
             defaults.set(
                 newValue.rawValue,
                 forKey: Key.dataSource
+            )
+        }
+    }
+
+    var appearance: AppearancePreference {
+        get {
+            defaults.string(forKey: Key.appearance)
+                .flatMap(AppearancePreference.init(rawValue:))
+                ?? .system
+        }
+        set {
+            defaults.set(
+                newValue.rawValue,
+                forKey: Key.appearance
             )
         }
     }

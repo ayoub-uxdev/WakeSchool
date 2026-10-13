@@ -4,6 +4,42 @@ import SwiftUI
 /// Métadonnées associées aux alarmes WakeSchool (vides pour l'instant).
 struct WakeAlarmMetadata: AlarmMetadata {}
 
+/// État de l'autorisation AlarmKit, exposé pour l'affichage dans les Réglages.
+/// Volontairement découplé du type AlarmKit pour rester affichable et testable.
+enum WakeAlarmAuthorizationStatus: Equatable {
+    case authorized
+    case denied
+    case notDetermined
+    case unknown
+
+    var label: String {
+        switch self {
+        case .authorized: return "Autorisé"
+        case .denied: return "Refusé"
+        case .notDetermined: return "Non demandé"
+        case .unknown: return "Inconnu"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .authorized: return "checkmark.seal.fill"
+        case .denied: return "xmark.octagon.fill"
+        case .notDetermined: return "questionmark.circle"
+        case .unknown: return "minus.circle"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .authorized: return .green
+        case .denied: return .red
+        case .notDetermined: return .orange
+        case .unknown: return .gray
+        }
+    }
+}
+
 /// Seul point d'entrée AlarmKit de l'application.
 /// Une alarme n'est jamais considérée comme créée si `schedule` lève une erreur.
 @MainActor
@@ -26,6 +62,18 @@ final class AlarmManager {
             return state == .authorized
         @unknown default:
             return false
+        }
+    }
+
+    /// État actuel de l'autorisation, en LECTURE SEULE.
+    /// Ne déclenche jamais la demande d'autorisation (contrairement à `requestAuthorization`).
+    /// Utilisé uniquement pour informer l'utilisateur dans les Réglages.
+    func authorizationStatus() -> WakeAlarmAuthorizationStatus {
+        switch system.authorizationState {
+        case .authorized: return .authorized
+        case .denied: return .denied
+        case .notDetermined: return .notDetermined
+        @unknown default: return .unknown
         }
     }
 

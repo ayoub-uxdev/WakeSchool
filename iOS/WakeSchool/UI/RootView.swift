@@ -48,6 +48,11 @@ struct RootView: View {
                 .tabItem {
                     Label("Réveil", systemImage: "alarm.fill")
                 }
+
+            SettingsView()
+                .tabItem {
+                    Label("Réglages", systemImage: "gearshape.fill")
+                }
         }
     }
 }

@@ -35,6 +35,46 @@ final class SchoolDataStore: ObservableObject {
         environment.preferences.dataSource
     }
 
+    // MARK: - Apparence
+
+    var appearance: AppearancePreference {
+        environment.preferences.appearance
+    }
+
+    func setAppearance(_ value: AppearancePreference) {
+        environment.preferences.appearance = value
+    }
+
+    // MARK: - Compte scolaire
+
+    /// Résumé NON SENSIBLE du compte PRONOTE configuré.
+    /// Ne contient jamais le mot de passe ni le jeton mobile.
+    struct PronoteConnectionSummary: Equatable {
+        var isConfigured: Bool
+        var accountKind: PronoteAccountKind?
+        var serverHost: String?
+        var method: String?
+    }
+
+    var connectionSummary: PronoteConnectionSummary {
+        guard let credentials = try? CredentialsStore(store: environment.secrets).load() else {
+            return PronoteConnectionSummary(
+                isConfigured: false,
+                accountKind: nil,
+                serverHost: nil,
+                method: nil
+            )
+        }
+        return PronoteConnectionSummary(
+            isConfigured: true,
+            accountKind: credentials.accountKind,
+            serverHost: URLComponents(string: credentials.serverURL)?.host,
+            method: credentials.usesMobileToken
+                ? "Jeton mobile (QR / ENT)"
+                : "Identifiants directs"
+        )
+    }
+
     // MARK: - Démarrage
 
     /// Affiche immédiatement le cache local puis synchronise.

@@ -26,6 +26,8 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         SWIFT_OBJC_BRIDGING_HEADER: WakeSchool/Pronote/PronoteZlib.h
         OTHER_LDFLAGS: "$(inherited) -lz"
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
     scheme:
       testTargets:
         - WakeSchoolTests
