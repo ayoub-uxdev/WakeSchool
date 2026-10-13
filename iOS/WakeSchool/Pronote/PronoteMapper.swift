@@ -84,6 +84,132 @@ enum PronoteMapper {
         return []
     }
 
+    // MARK: - Absences et retards
+
+    /// Convertit une réponse « PagePresence » PRONOTE en évènements de vie scolaire.
+    ///
+    /// Contrat confirmé via pronotepy (`Period.absences` / `Period.delays`) :
+    /// une liste mixte `listeAbsences.V` contenant des items identifiés par `G`
+    /// (13 = absence, 14 = retard). Toute autre valeur de `G` est ignorée.
+    ///
+    /// Lève `PronoteMapperError.invalidResponse` si `listeAbsences` est absente ou
+    /// mal formée : une réponse invalide ne doit JAMAIS être interprétée comme une
+    /// liste vide valide (sinon `syncAttendance` effacerait les données locales).
+    static func attendance(from response: Any) throws -> [AttendanceEvent] {
+        guard let items = protocolItems(from: response, keys: ["listeAbsences", "ListeAbsences"]) else {
+            throw PronoteMapperError.invalidResponse("listeAbsences absente ou mal formée")
+        }
+
+        var result: [AttendanceEvent] = []
+        for item in items {
+            switch attendanceKind(item) {
+            case .absence:
+                if let event = absence(item) { result.append(event) }
+            case .delay:
+                if let event = delay(item) { result.append(event) }
+            case nil:
+                continue // Autre type d'évènement PRONOTE (punition…) : ignoré.
+            }
+        }
+
+        var seen = Set<UUID>()
+        return result
+            .filter { seen.insert($0.id).inserted }
+            .sorted { $0.start > $1.start }
+    }
+
+    /// Nature de l'item selon son code `G` : 13 = absence, 14 = retard.
+    /// Renvoie nil pour toute autre valeur (punition G=41, etc.) : item ignoré.
+    private static func attendanceKind(_ item: [String: Any]) -> AttendanceKind? {
+        switch PronoteJSON.number(item["G"]) {
+        case 13: return .absence
+        case 14: return .delay
+        default: return nil
+        }
+    }
+
+    private static func absence(_ item: [String: Any]) -> AttendanceEvent? {
+        // dateDebut/dateFin typées "V" (dd/MM/yyyy HH:mm:ss) — cf. pronotepy Absence.
+        guard let start = PronoteJSON.date(item["dateDebut"]) else { return nil }
+        let end = PronoteJSON.date(item["dateFin"])
+
+        let rawID = extractID(item["N"]) ?? "absence|\(start.timeIntervalSince1970)|\(end?.timeIntervalSince1970 ?? 0)"
+        let id = stableID(prefix: "attendance", value: rawID)
+        // Durée : NbrHeures (« 2 ») ou calculée depuis dateDebut/dateFin. Aucune invention.
+        let duration = minutesDuration(from: item) ?? end.map { Int($0.timeIntervalSince(start) / 60) }
+
+        return AttendanceEvent(
+            id: id,
+            kind: .absence,
+            start: start,
+            end: end,
+            durationMinutes: duration,
+            isJustified: PronoteJSON.bool(item["justifie"]) ?? false,
+            justification: nil,
+            reasons: reasons(from: item),
+            subjectName: extractName(findValue(in: item, keys: ["matiere", "Matiere"]))
+        )
+    }
+
+    private static func delay(_ item: [String: Any]) -> AttendanceEvent? {
+        guard let start = PronoteJSON.date(item["date"]) else { return nil }
+
+        let rawID = extractID(item["N"]) ?? "retard|\(start.timeIntervalSince1970)"
+        let id = stableID(prefix: "attendance", value: rawID)
+        // Durée en minutes : champ `duree` (entier, confirmé par pronotepy Delay).
+        let duration = PronoteJSON.number(item["duree"]).map { Int($0.rounded()) }
+
+        return AttendanceEvent(
+            id: id,
+            kind: .delay,
+            start: start,
+            end: nil,
+            durationMinutes: duration,
+            isJustified: PronoteJSON.bool(item["justifie"]) ?? false,
+            justification: PronoteJSON.string(item["justification"]),
+            reasons: reasons(from: item),
+            subjectName: extractName(findValue(in: item, keys: ["matiere", "Matiere"]))
+        )
+    }
+
+    /// Durée d'une absence en minutes : `NbrHeures` (« 2 », « 1,5 ») quand fourni.
+    private static func minutesDuration(from item: [String: Any]) -> Int? {
+        guard let raw = PronoteJSON.string(item["NbrHeures"]) else { return nil }
+        return parseHourDuration(raw)
+    }
+
+    private static func parseHourDuration(_ raw: String) -> Int? {
+        let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ",", with: ".")
+            .replacingOccurrences(of: " ", with: "")
+        if let value = PronoteJSON.number(cleaned) {
+            // Valeur décimale interprétée en heures (ex. « 1,5 » => 90 min).
+            return Int((value * 60).rounded())
+        }
+        guard let hourRange = cleaned.range(of: #"^(\d+)h"#, options: .regularExpression) else { return nil }
+        guard let hours = Int(cleaned[hourRange].replacingOccurrences(of: "h", with: "")) else { return nil }
+        let minutePart = cleaned[hourRange.upperBound...].prefix { $0.isNumber }
+        return hours * 60 + (Int(minutePart) ?? 0)
+    }
+
+    /// Motifs : chaîne simple, ou liste de libellés/dictionnaires PRONOTE.
+    private static func reasons(from item: [String: Any]) -> [String] {
+        let value = findValue(in: item, keys: ["motifs", "listeMotifs", "Motifs", "reasons"])
+        if let list = value as? [[String: Any]] {
+            return list.compactMap { extractName($0) ?? PronoteJSON.string($0["L"]) }
+        }
+        if let list = value as? [String] {
+            return list
+        }
+        if let wrapped = value as? [String: Any], let list = wrapped["V"] as? [[String: Any]] {
+            return list.compactMap { extractName($0) ?? PronoteJSON.string($0["L"]) }
+        }
+        if let single = PronoteJSON.string(value), !single.isEmpty {
+            return [single]
+        }
+        return []
+    }
+
     static func schoolYearStart(from response: Any) -> Date? {
         let root = PronoteJSON.unwrap(response)
         guard let general = PronoteJSON.recursivelyFindDictionary(

@@ -15,4 +15,5 @@ struct UnavailablePronoteClient: PronoteClient {
     func getTimetable() async throws -> [TimetableEntry] { throw PronoteError.notImplemented }
     func getHomework() async throws -> [Homework] { throw PronoteError.notImplemented }
     func getGrades() async throws -> [Grade] { throw PronoteError.notImplemented }
+    func getAttendance() async throws -> [AttendanceEvent] { throw PronoteError.notImplemented }
 }

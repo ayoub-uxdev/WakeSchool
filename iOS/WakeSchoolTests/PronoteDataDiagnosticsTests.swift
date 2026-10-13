@@ -110,4 +110,16 @@ private final class DiagnosticPronoteClient: PronoteClient, PronoteDataDiagnosti
             )
         ]
     }
+
+    func getAttendance() async throws -> [AttendanceEvent] {
+        [
+            AttendanceEvent(
+                id: UUID(),
+                kind: .delay,
+                start: Date(timeIntervalSince1970: 1_800_000_000),
+                durationMinutes: 10,
+                isJustified: false
+            )
+        ]
+    }
 }

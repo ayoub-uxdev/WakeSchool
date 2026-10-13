@@ -216,6 +216,62 @@ final class PronoteSessionClient {
         )
     }
 
+    /// Absences et retards de l'élève pour une période scolaire.
+    ///
+    /// Contrat confirmé via pronotepy (`Period.absences` / `Period.delays`,
+    /// pronotepy/dataClasses.py) :
+    /// - fonction RPC : « PagePresence », onglet de signature 19 ;
+    /// - payload : `periode` {N, L, G:2}, `DateDebut` et `DateFin` typées `_T:7` (dd/MM/yyyy HH:mm:ss) ;
+    /// - réponse : une liste mixte `listeAbsences.V`, filtrée par `G` (13 = absence, 14 = retard).
+    func presence(
+        period: [String: Any],
+        resource: [String: Any]
+    ) async throws -> Any {
+        let signature = try Self.signature(onglet: 19, resource: resource)
+        guard let periodID = period["N"],
+              let periodName = period["L"] else {
+            throw PronoteSessionError.invalidPeriod
+        }
+        let properties = PronoteAPIProperties.forVersion(session.version)
+        let formatter = Self.presenceDateFormatter
+        let payload: [String: Any] = [
+            properties.data: [
+                "periode": [
+                    "N": periodID,
+                    "L": periodName,
+                    "G": 2
+                ],
+                "DateDebut": ["_T": 7, "V": formatter.string(from: Self.attendanceWindowStart)],
+                "DateFin": ["_T": 7, "V": formatter.string(from: Self.attendanceWindowEnd)]
+            ],
+            Self.signatureKey(for: session.version): signature
+        ]
+
+        return try await request(
+            function: "PagePresence",
+            data: payload
+        )
+    }
+
+    /// Fenêtre large couvrant toute l'année scolaire en cours : PRONOTE filtre
+    /// lui-même les évènements à l'intérieur de ces bornes.
+    private static var attendanceWindowStart: Date {
+        Calendar.current.date(byAdding: .month, value: -12, to: Date()) ?? Date()
+    }
+
+    private static var attendanceWindowEnd: Date {
+        Calendar.current.date(byAdding: .month, value: 1, to: Date()) ?? Date()
+    }
+
+    /// Format exigé par PRONOTE pour les dates typées `_T:7`.
+    private static let presenceDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "fr_FR_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.dateFormat = "dd/MM/yyyy HH:mm:ss"
+        return formatter
+    }()
+
     func downloadHomeworkAttachment(
         _ attachment: HomeworkAttachment
     ) async throws -> Data {

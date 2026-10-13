@@ -44,14 +44,9 @@ struct RootView: View {
                     Label("Notes", systemImage: "chart.bar.fill")
                 }
 
-            SmartAlarmView()
+            MoreView()
                 .tabItem {
-                    Label("Réveil", systemImage: "alarm.fill")
-                }
-
-            SettingsView()
-                .tabItem {
-                    Label("Réglages", systemImage: "gearshape.fill")
+                    Label("Plus", systemImage: "ellipsis.circle.fill")
                 }
         }
     }

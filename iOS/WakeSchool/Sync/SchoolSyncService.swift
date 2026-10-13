@@ -32,6 +32,26 @@ final class SchoolSyncService {
         return try await downloader.downloadHomeworkAttachment(attachment)
     }
 
+    // MARK: - Absences et retards (synchronisation indépendante)
+
+    /// Absences et retards déjà présents sur l'appareil (fonctionne hors ligne).
+    func loadCachedAttendance() throws -> [AttendanceEvent] {
+        try repository.loadAttendance()
+    }
+
+    /// Synchronise les absences et retards SÉPARÉMENT du cache scolaire.
+    ///
+    /// En cas d'échec, l'erreur est propagée mais **aucune donnée locale n'est effacée** :
+    /// `saveAttendance` n'est appelé qu'après une récupération réussie. Un blocage de
+    /// l'API vie scolaire n'affecte donc jamais les évènements précédemment enregistrés,
+    /// ni la synchronisation des cours/devoirs/notes.
+    @discardableResult
+    func syncAttendance() async throws -> [AttendanceEvent] {
+        let events = try await provider.attendance()
+        try repository.saveAttendance(events)
+        return events
+    }
+
     /// Récupère les données, les persiste, puis renvoie l'état local à jour.
     @discardableResult
     func sync() async throws -> SchoolSnapshot {

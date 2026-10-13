@@ -186,4 +186,55 @@ struct DemoSchoolDataProvider: SchoolDataProvider {
                         start: at(40, 0), end: at(54, 0), kind: .holiday, details: nil)
         ]
     }
+
+    // MARK: - Absences et retards (données de démonstration)
+
+    func attendance() async throws -> [AttendanceEvent] {
+        [
+            AttendanceEvent(
+                id: Self.stableID(7, 1),
+                kind: .absence,
+                start: at(-12, 8),
+                end: at(-12, 10),
+                durationMinutes: 120,
+                isJustified: true,
+                justification: "Rendez-vous médical",
+                reasons: ["Rendez-vous médical"],
+                subjectName: "Mathématiques"
+            ),
+            AttendanceEvent(
+                id: Self.stableID(7, 2),
+                kind: .delay,
+                start: at(-6, 8, 15),
+                end: nil,
+                durationMinutes: 15,
+                isJustified: false,
+                justification: nil,
+                reasons: [],
+                subjectName: "Français"
+            ),
+            AttendanceEvent(
+                id: Self.stableID(7, 3),
+                kind: .absence,
+                start: at(-2, 14),
+                end: at(-2, 16),
+                durationMinutes: 120,
+                isJustified: false,
+                justification: nil,
+                reasons: [],
+                subjectName: "Physique-Chimie"
+            ),
+            AttendanceEvent(
+                id: Self.stableID(7, 4),
+                kind: .delay,
+                start: at(0, 10, 5),
+                end: nil,
+                durationMinutes: 10,
+                isJustified: true,
+                justification: "Bus en retard",
+                reasons: ["Transport"],
+                subjectName: nil
+            )
+        ]
+    }
 }

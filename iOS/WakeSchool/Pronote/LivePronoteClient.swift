@@ -353,6 +353,35 @@ final class LivePronoteClient: PronoteClient, PronoteDataDiagnosticsReporting {
         }
     }
 
+    // MARK: - Absences et retards
+
+    /// Absences et retards de l'élève, toutes périodes confondues.
+    ///
+    /// Synchronisation indépendante : les diagnostics de vie scolaire ne polluent
+    /// pas ceux du cache scolaire. En cas d'erreur (contrat serveur, hors ligne…),
+    /// l'erreur est propagée et le cache local existant n'est pas touché.
+    func getAttendance() async throws -> [AttendanceEvent] {
+        let client = try await connectedClient()
+        let resource = try await loadResource(client)
+
+        guard !periods.isEmpty else {
+            throw PronoteLiveError.missingSchoolPeriods
+        }
+
+        var events: [AttendanceEvent] = []
+        for period in periods {
+            let response = try await client.presence(period: period, resource: resource)
+            // Une listeAbsences absente/mal formée lève une erreur : le cache
+            // local est conservé (cf. SchoolSyncService.syncAttendance).
+            events.append(contentsOf: try PronoteMapper.attendance(from: response))
+        }
+
+        var seen = Set<UUID>()
+        return events
+            .filter { seen.insert($0.id).inserted }
+            .sorted { $0.start > $1.start }
+    }
+
     private func fetchGrades() async throws -> [Grade] {
         let client =
             try await connectedClient()

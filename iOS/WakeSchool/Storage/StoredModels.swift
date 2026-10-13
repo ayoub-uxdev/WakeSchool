@@ -195,3 +195,43 @@ final class StoredEvent {
                     details: details)
     }
 }
+
+@Model
+final class StoredAttendanceEvent {
+    @Attribute(.unique) var id: UUID
+    var kindRaw: String
+    var start: Date
+    var end: Date?
+    var durationMinutes: Int
+    var isJustified: Bool
+    var justification: String?
+    var reasons: [String]
+    var subjectName: String?
+
+    init(_ event: AttendanceEvent) {
+        id = event.id
+        kindRaw = event.kind.rawValue
+        start = event.start
+        end = event.end
+        // 0 = durée inconnue (le champ du modèle est non optionnel).
+        durationMinutes = event.durationMinutes ?? 0
+        isJustified = event.isJustified
+        justification = event.justification
+        reasons = event.reasons
+        subjectName = event.subjectName
+    }
+
+    var event: AttendanceEvent {
+        AttendanceEvent(
+            id: id,
+            kind: AttendanceKind(rawValue: kindRaw) ?? .absence,
+            start: start,
+            end: end,
+            durationMinutes: durationMinutes > 0 ? durationMinutes : nil,
+            isJustified: isJustified,
+            justification: justification,
+            reasons: reasons,
+            subjectName: subjectName
+        )
+    }
+}

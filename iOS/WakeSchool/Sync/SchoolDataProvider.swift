@@ -9,6 +9,8 @@ protocol SchoolDataProvider {
     func averages() async throws -> [SubjectAverage]
     func exams() async throws -> [Exam]
     func events() async throws -> [SchoolEvent]
+    /// Absences et retards. Fourni avec une implémentation par défaut (vide).
+    func attendance() async throws -> [AttendanceEvent]
 }
 
 protocol HomeworkAttachmentDownloading {
@@ -16,14 +18,22 @@ protocol HomeworkAttachmentDownloading {
 }
 
 extension SchoolDataProvider {
+    /// Par défaut, aucune absence/retard (sources qui ne les fournissent pas).
+    func attendance() async throws -> [AttendanceEvent] { [] }
+
     /// Par défaut, les moyennes sont calculées localement à partir des notes.
     /// Un provider dont la source fournit ses propres moyennes peut surcharger cette méthode.
     func averages() async throws -> [SubjectAverage] {
         AverageCalculator.subjectAverages(from: try await grades())
     }
 
-    /// Récupère toutes les données. Échoue en entier si une récupération échoue :
-    /// le cache local n'est ainsi jamais écrasé par des données partielles.
+    /// Récupère les données scolaires de base (cours, devoirs, notes, contrôles, évènements).
+    /// Échoue en entier si une récupération échoue : le cache local n'est ainsi jamais
+    /// écrasé par des données partielles.
+    ///
+    /// Les absences/retards en sont volontairement EXCLUS : ils suivent un chemin de
+    /// synchronisation indépendant (`SchoolSyncService.syncAttendance`) afin qu'un
+    /// éventuel blocage de l'API vie scolaire n'empêche jamais la synchronisation du cache scolaire.
     func snapshot() async throws -> SchoolSnapshot {
         SchoolSnapshot(timetable: try await timetable(),
                        homework: try await homework(),

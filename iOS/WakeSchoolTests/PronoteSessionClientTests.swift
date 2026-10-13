@@ -70,8 +70,9 @@ final class PronoteSessionClientTests: XCTestCase {
             weekRange: 7...13
         )
         _ = try await client.grades(period: period, resource: resource)
+        _ = try await client.presence(period: period, resource: resource)
 
-        XCTAssertEqual(transport.requests.count, 3)
+        XCTAssertEqual(transport.requests.count, 4)
         assertRequest(
             transport.requests[0],
             function: "PageEmploiDuTemps",
@@ -107,6 +108,31 @@ final class PronoteSessionClientTests: XCTestCase {
                 XCTAssertNil(periodData?["G"])
                 XCTAssertEqual(periodData?["N"] as? String, "synthetic-period")
                 XCTAssertEqual(periodData?["L"] as? String, "Période synthétique")
+            }
+        )
+
+        // Contrat LOT 7 confirmé via pronotepy : PagePresence, onglet 19,
+        // `periode` {N, L, G:2} + DateDebut/DateFin typées _T:7.
+        assertRequest(
+            transport.requests[3],
+            function: "PagePresence",
+            tab: 19,
+            resource: resource,
+            expectedData: { data in
+                let periodData = data["periode"] as? [String: Any]
+                XCTAssertEqual(periodData?["N"] as? String, "synthetic-period")
+                XCTAssertEqual(periodData?["L"] as? String, "Période synthétique")
+                XCTAssertEqual((periodData?["G"] as? NSNumber)?.intValue, 2)
+
+                let dateFormatter = DateFormatter()
+                dateFormatter.dateFormat = "dd/MM/yyyy HH:mm:ss"
+                dateFormatter.timeZone = .current
+                for key in ["DateDebut", "DateFin"] {
+                    let typed = data[key] as? [String: Any]
+                    XCTAssertEqual(typed?["_T"] as? Int, 7)
+                    let raw = try? XCTUnwrap(typed?["V"] as? String)
+                    XCTAssertNotNil(dateFormatter.date(from: raw ?? ""))
+                }
             }
         )
     }

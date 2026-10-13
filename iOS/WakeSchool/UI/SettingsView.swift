@@ -22,31 +22,30 @@ struct SettingsView: View {
     private var isPronote: Bool { store.dataSource == .pronote }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                accountSection
-                if let error = store.errorMessage {
-                    errorSection(error)
-                }
-                alarmSection
-                appearanceSection
-                dataSection
-                aboutSection
+        // Poussé depuis MoreView : le NavigationStack est fourni par le parent.
+        Form {
+            accountSection
+            if let error = store.errorMessage {
+                errorSection(error)
             }
-            .navigationTitle("Réglages")
-            .tint(WakeTheme.accent)
-            .preferredColorScheme(appearance.colorScheme)
-            .onAppear {
-                alarmStatus = AlarmManager.shared.authorizationStatus()
-                alarmController.refresh()
-            }
-            .onChange(of: store.dataSource) { _, _ in
-                alarmController.refresh()
-            }
-            .sheet(isPresented: $showingLogin) {
-                PronoteLoginView()
-                    .environmentObject(store)
-            }
+            alarmSection
+            appearanceSection
+            dataSection
+            aboutSection
+        }
+        .navigationTitle("Réglages")
+        .tint(WakeTheme.accent)
+        .preferredColorScheme(appearance.colorScheme)
+        .onAppear {
+            alarmStatus = AlarmManager.shared.authorizationStatus()
+            alarmController.refresh()
+        }
+        .onChange(of: store.dataSource) { _, _ in
+            alarmController.refresh()
+        }
+        .sheet(isPresented: $showingLogin) {
+            PronoteLoginView()
+                .environmentObject(store)
         }
     }
 
@@ -402,10 +401,13 @@ struct PronoteDiagnosticsView: View {
 }
 
 #Preview {
-    SettingsView()
-        .environmentObject(
-            SchoolDataStore(
-                environment: AppEnvironment.inMemory()
+    // La vue est poussée depuis MoreView : le preview simule ce contexte.
+    NavigationStack {
+        SettingsView()
+    }
+    .environmentObject(
+        SchoolDataStore(
+            environment: AppEnvironment.inMemory()
             )
         )
 }

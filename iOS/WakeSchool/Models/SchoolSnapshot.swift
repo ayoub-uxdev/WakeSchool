@@ -9,6 +9,8 @@ struct SchoolSnapshot: Codable, Equatable {
     var averages: [SubjectAverage] = []
     var exams: [Exam] = []
     var events: [SchoolEvent] = []
+    /// Absences et retards de l'élève.
+    var attendance: [AttendanceEvent] = []
 
     static let empty = SchoolSnapshot()
 }

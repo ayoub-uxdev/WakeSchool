@@ -12,6 +12,11 @@ final class SchoolDataStore: ObservableObject {
     @Published private(set) var lastSync: Date?
     @Published private(set) var syncDiagnostics: PronoteSyncDiagnostics?
 
+    // Absences et retards : état et erreur INDÉPENDANTS du cache scolaire.
+    @Published private(set) var attendance: [AttendanceEvent] = []
+    @Published private(set) var isSyncingAttendance = false
+    @Published private(set) var attendanceError: String?
+
     private let environment: AppEnvironment
     private var hasStarted = false
 
@@ -91,6 +96,9 @@ final class SchoolDataStore: ObservableObject {
             errorMessage = error.localizedDescription
         }
 
+        // Vie scolaire chargée séparément : une erreur ici n'empêche pas l'affichage du cache.
+        attendance = (try? environment.sync.loadCachedAttendance()) ?? []
+
         lastSync = environment.preferences.lastSyncDate
 
         await refresh()
@@ -119,6 +127,26 @@ final class SchoolDataStore: ObservableObject {
             syncDiagnostics?.recordPersistedSnapshot(snapshot)
             errorMessage = error.localizedDescription
         }
+
+        // Les absences/retards se synchronisent indépendamment du cache scolaire.
+        await refreshAttendance()
+    }
+
+    /// Synchronise les absences et retards. Totalement dissocié de `refresh` :
+    /// un échec ici renseigne `attendanceError` SANS toucher au cache scolaire
+    /// ni aux évènements précédemment enregistrés.
+    func refreshAttendance() async {
+        guard !isSyncingAttendance else { return }
+
+        isSyncingAttendance = true
+        defer { isSyncingAttendance = false }
+
+        do {
+            attendance = try await environment.sync.syncAttendance()
+            attendanceError = nil
+        } catch {
+            attendanceError = error.localizedDescription
+        }
     }
 
     // MARK: - Source de données
@@ -132,6 +160,7 @@ final class SchoolDataStore: ObservableObject {
         environment.reloadProvider()
 
         errorMessage = nil
+        attendanceError = nil
     }
 
     /// Reconnecte le provider actuel.
@@ -140,6 +169,7 @@ final class SchoolDataStore: ObservableObject {
     func reloadProvider() {
         environment.reloadProvider()
         errorMessage = nil
+        attendanceError = nil
     }
 
     // MARK: - Devoirs

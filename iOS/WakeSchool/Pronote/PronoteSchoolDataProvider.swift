@@ -155,6 +155,10 @@ struct PronoteSchoolDataProvider: SchoolDataProvider, SchoolSyncDiagnosticsRepor
         []
     }
 
+    func attendance() async throws -> [AttendanceEvent] {
+        try await client.getAttendance()
+    }
+
     func downloadHomeworkAttachment(_ attachment: HomeworkAttachment) async throws -> Data {
         guard let client = client as? LivePronoteClient else {
             throw PronoteTransportError.attachmentDownloadUnsupported
