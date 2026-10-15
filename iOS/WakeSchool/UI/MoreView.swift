@@ -11,6 +11,7 @@ struct MoreView: View {
         case absences
         case alarm
         case settings
+        case notificationCenter
     }
 
     var body: some View {
@@ -42,10 +43,15 @@ struct MoreView: View {
                     }
                     .buttonStyle(.plain)
 
-                    // Fonctionnalités à venir (LOT 8 / LOT 9) : non cliquables.
-                    MoreUpcomingCard(symbol: "bell.badge",
-                                     title: "Centre de notifications",
-                                     subtitle: "Bientôt disponible")
+                    NavigationLink(value: Destination.notificationCenter) {
+                        MoreCard(symbol: "bell.badge",
+                                 title: "Centre de notifications",
+                                 subtitle: store.notificationCenter.unreadCount > 0
+                                     ? "\(store.notificationCenter.unreadCount) non lue\(store.notificationCenter.unreadCount > 1 ? "s" : "")"
+                                     : "Historique des évènements",
+                                 tint: .purple)
+                    }
+                    .buttonStyle(.plain)
                     MoreUpcomingCard(symbol: "bubble.left.and.text.bubble.right",
                                      title: "WakeBot",
                                      subtitle: "Bientôt disponible")
@@ -60,6 +66,7 @@ struct MoreView: View {
                 case .absences: AbsencesView()
                 case .alarm: SmartAlarmView()
                 case .settings: SettingsView()
+                case .notificationCenter: NotificationCenterView(center: store.notificationCenter)
                 }
             }
         }

@@ -122,6 +122,7 @@ final class SchoolDataStore: ObservableObject {
             syncDiagnostics = environment.sync.diagnostics
             lastSync = environment.preferences.lastSyncDate
             errorMessage = nil
+            await processChangeDetection()
         } catch {
             syncDiagnostics = environment.sync.diagnostics
             syncDiagnostics?.recordPersistedSnapshot(snapshot)
@@ -130,6 +131,124 @@ final class SchoolDataStore: ObservableObject {
 
         // Les absences/retards se synchronisent indépendamment du cache scolaire.
         await refreshAttendance()
+    }
+
+    // MARK: - Détection des nouveautés et notifications (LOT 8)
+
+    /// Détecte les nouveautés après synchronisation, met à jour les ids connus
+    /// et alimente le centre de notifications.
+    ///
+    /// La référence est établie par un marqueur PERSISTANT explicite :
+    /// à la première synchronisation réussie, les données du moment deviennent
+    /// la baseline SANS notification — même si l'utilisateur n'a aucune note
+    /// (un ensemble vide n'est pas « premier lancement »). Ensuite, toute note
+    /// ou contrôle dont l'id stable n'était pas connu est signalé exactement
+    /// une fois.
+    private func processChangeDetection() async {
+        let hadBaseline = environment.preferences.hasChangeDetectionBaseline
+        let knownGrades = environment.preferences.knownGradeIDs
+        let knownExams = environment.preferences.knownExamIDs
+
+        // Mise à jour de la référence avec l'état courant.
+        environment.preferences.knownGradeIDs = ChangeDetectionService.gradeIDs(in: snapshot)
+        environment.preferences.knownExamIDs = ChangeDetectionService.examIDs(in: snapshot)
+        environment.preferences.hasChangeDetectionBaseline = true
+
+        // Avant la première baseline : rien à signaler (pas d'avalanche).
+        guard hadBaseline else { return }
+
+        let changes = ChangeDetectionService.detect(previousKnownGradeIDs: knownGrades,
+                                                    previousKnownExamIDs: knownExams,
+                                                    newSnapshot: snapshot)
+
+        // Le centre enregistre les changements même si les notifications système
+        // ne sont pas autorisées : le centre reste utile.
+        if !changes.newGrades.isEmpty {
+            notificationCenter.addIfNew(kind: .newGrade,
+                                        title: "Nouvelle\(changes.newGrades.count > 1 ? "s" : "") note\(changes.newGrades.count > 1 ? "s" : "")",
+                                        message: changes.newGrades.map { $0.subject.name }.joined(separator: ", "))
+        }
+        if !changes.newExams.isEmpty {
+            notificationCenter.addIfNew(kind: .newExam,
+                                        title: "Nouveau\(changes.newExams.count > 1 ? "x" : "") contrôle\(changes.newExams.count > 1 ? "s" : "")",
+                                        message: changes.newExams.map { $0.subject.name }.joined(separator: ", "))
+        }
+
+        await environment.notifications.processAfterSync(
+            entries: snapshot.timetable,
+            snapshot: snapshot,
+            knownGradeIDs: knownGrades,
+            knownExamIDs: knownExams,
+            wakeAlarmEnabled: environment.preferences.wakeAlarmEnabled,
+            wakeConfirmation: environment.preferences.wakeConfirmation
+        )
+    }
+
+    /// Centre de notifications WakeSchool (historique local).
+    var notificationCenter: NotificationCenterStore { environment.notificationCenter }
+
+    /// Orchestrateur des notifications (réglages).
+    var notifications: NotificationOrchestrator { environment.notifications }
+
+    /// Règles de notifications personnalisées.
+    var notificationRules: NotificationRulesStore { environment.notificationRules }
+
+    // MARK: - Réveil (LOT 8)
+
+    /// Réveil automatique activé.
+    var wakeAlarmEnabled: Bool {
+        environment.preferences.wakeAlarmEnabled
+    }
+
+    func setWakeAlarmEnabled(_ enabled: Bool) {
+        environment.preferences.wakeAlarmEnabled = enabled
+        // Désactivation : annule l'alarme AUTOMATIQUE uniquement (jamais les
+        // alarmes manuelles). Réactivation : le prochain cycle AutoWake
+        // reprogrammera selon l'emploi du temps.
+        if !enabled {
+            environment.autoWakeLifecycle.disable()
+        }
+    }
+
+    /// Heure de réveil personnalisée (minutes depuis minuit), nil = calcul AutoWake.
+    var customWakeMinutes: Int? {
+        environment.preferences.customWakeMinutes
+    }
+
+    func setCustomWakeMinutes(_ minutes: Int?) {
+        environment.preferences.customWakeMinutes = minutes
+        // Changement d'heure : reprogrammation immédiate à partir des données
+        // déjà synchronisées (sans nouvelle connexion PRONOTE).
+        Task { await recalculateAutoWake() }
+    }
+
+    /// Modification des préférences de préparation/trajet : le calcul du réveil
+    /// change, donc l'alarme automatique est actualisée.
+    func setWakeSettings(_ settings: WakeSettings) {
+        environment.preferences.wakeSettings = settings
+        Task { await recalculateAutoWake() }
+    }
+
+    /// Recalcule le plan AutoWake et met à jour l'alarme automatique à partir
+    /// des données DÉJÀ synchronisées (aucun appel réseau PRONOTE).
+    func recalculateAutoWake() async {
+        await environment.notifications.processAfterSync(
+            entries: snapshot.timetable,
+            snapshot: snapshot,
+            knownGradeIDs: environment.preferences.knownGradeIDs,
+            knownExamIDs: environment.preferences.knownExamIDs,
+            wakeAlarmEnabled: environment.preferences.wakeAlarmEnabled,
+            wakeConfirmation: environment.preferences.wakeConfirmation
+        )
+    }
+
+    /// Paramètres de la confirmation quotidienne.
+    var wakeConfirmation: WakeConfirmationSettings {
+        environment.preferences.wakeConfirmation
+    }
+
+    func setWakeConfirmation(_ settings: WakeConfirmationSettings) {
+        environment.preferences.wakeConfirmation = settings
     }
 
     /// Synchronise les absences et retards. Totalement dissocié de `refresh` :

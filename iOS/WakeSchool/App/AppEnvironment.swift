@@ -7,6 +7,14 @@ final class AppEnvironment {
     let secrets: SecretStore
     let repository: SchoolRepository
     private(set) var sync: SchoolSyncService
+    /// Centre de notifications (historique local), partagé par tous les écrans.
+    let notificationCenter: NotificationCenterStore
+    /// Règles de notification personnalisées.
+    let notificationRules: NotificationRulesStore
+    /// Cycle de vie de l'alarme automatique AutoWake (store isolé des alarmes manuelles).
+    let autoWakeLifecycle: AutoWakeLifecycle
+    /// Orchestrateur des notifications (autorisation, planification, détection).
+    let notifications: NotificationOrchestrator
 
     init(
         preferences: PreferencesStore,
@@ -17,6 +25,23 @@ final class AppEnvironment {
         self.preferences = preferences
         self.secrets = secrets
         self.repository = repository
+        let centerStore = NotificationCenterStore()
+        let rulesStore = NotificationRulesStore()
+        self.notificationCenter = centerStore
+        self.notificationRules = rulesStore
+        let lifecycle = AutoWakeLifecycle(
+            alarmScheduler: AlarmManager.shared,
+            store: UserDefaultsAutoWakeAlarmStore()
+        )
+        self.autoWakeLifecycle = lifecycle
+        self.notifications = NotificationOrchestrator(
+            scheduler: SystemNotificationScheduler(),
+            center: centerStore,
+            rules: rulesStore,
+            preferences: preferences,
+            alarmScheduler: AlarmManager.shared,
+            autoWakeLifecycle: lifecycle
+        )
         self.sync = SchoolSyncService(
             provider: provider,
             repository: repository,

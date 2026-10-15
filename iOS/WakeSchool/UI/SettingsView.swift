@@ -29,6 +29,9 @@ struct SettingsView: View {
                 errorSection(error)
             }
             alarmSection
+            wakeConfirmationSection
+            notificationsSection
+            debugSection
             appearanceSection
             dataSection
             aboutSection
@@ -39,6 +42,16 @@ struct SettingsView: View {
         .onAppear {
             alarmStatus = AlarmManager.shared.authorizationStatus()
             alarmController.refresh()
+            confirmationSettings = store.wakeConfirmation
+            customWakeEnabled = store.customWakeMinutes != nil
+            customWakeMinutes = store.customWakeMinutes ?? (6 * 60 + 45)
+            wakeSettingsDraft = store.wakeSettings
+        }
+        .onChange(of: customWakeEnabled) { _, enabled in
+            store.setCustomWakeMinutes(enabled ? customWakeMinutes : nil)
+        }
+        .onChange(of: customWakeMinutes) { _, minutes in
+            if customWakeEnabled { store.setCustomWakeMinutes(minutes) }
         }
         .onChange(of: store.dataSource) { _, _ in
             alarmController.refresh()
@@ -153,6 +166,289 @@ struct SettingsView: View {
     }
 
     // MARK: - Réveil et notifications
+
+    // MARK: - Confirmation quotidienne (LOT 8)
+
+    @State private var confirmationSettings: WakeConfirmationSettings = .default
+    @State private var customWakeEnabled = false
+    @State private var customWakeMinutes = 6 * 60 + 45
+    @State private var wakeSettingsDraft = WakeSettings.default
+
+    private var wakeConfirmationSection: some View {
+        Section {
+            Toggle("Réveil automatique", isOn: Binding(
+                get: { store.wakeAlarmEnabled },
+                set: { store.setWakeAlarmEnabled($0) }
+            ))
+
+            Stepper("Temps de trajet : \(wakeSettingsDraft.travelMinutes) min",
+                    value: Binding(
+                        get: { wakeSettingsDraft.travelMinutes },
+                        set: { wakeSettingsDraft.travelMinutes = min(max($0, 0), 180) }
+                    ), onEditingChanged: { editing in
+                        if !editing { store.setWakeSettings(wakeSettingsDraft) }
+                    })
+            Stepper("Temps de préparation : \(wakeSettingsDraft.preparationMinutes) min",
+                    value: Binding(
+                        get: { wakeSettingsDraft.preparationMinutes },
+                        set: { wakeSettingsDraft.preparationMinutes = min(max($0, 0), 180) }
+                    ), onEditingChanged: { editing in
+                        if !editing { store.setWakeSettings(wakeSettingsDraft) }
+                    })
+            Stepper("Marge de sécurité : \(wakeSettingsDraft.safetyMarginMinutes) min",
+                    value: Binding(
+                        get: { wakeSettingsDraft.safetyMarginMinutes },
+                        set: { wakeSettingsDraft.safetyMarginMinutes = min(max($0, 0), 120) }
+                    ), onEditingChanged: { editing in
+                        if !editing { store.setWakeSettings(wakeSettingsDraft) }
+                    })
+
+            Toggle("Heure de réveil personnalisée", isOn: $customWakeEnabled)
+            if customWakeEnabled {
+                DatePicker("Heure", selection: Binding(
+                    get: {
+                        let midnight = Calendar.current.startOfDay(for: Date())
+                        return midnight.addingTimeInterval(TimeInterval(customWakeMinutes) * 60)
+                    },
+                    set: { date in
+                        let components = Calendar.current.dateComponents([.hour, .minute], from: date)
+                        customWakeMinutes = (components.hour ?? 6) * 60 + (components.minute ?? 45)
+                    }
+                ), displayedComponents: .hourAndMinute)
+            }
+
+            Toggle("Confirmation quotidienne du réveil", isOn: Binding(
+                get: { confirmationSettings.isEnabled },
+                set: { enabled in
+                    confirmationSettings.isEnabled = enabled
+                    store.setWakeConfirmation(confirmationSettings)
+                }
+            ))
+            if confirmationSettings.isEnabled {
+                DatePicker("Heure de confirmation", selection: Binding(
+                    get: {
+                        let midnight = Calendar.current.startOfDay(for: Date())
+                        return midnight.addingTimeInterval(TimeInterval(confirmationSettings.confirmationTimeMinutes) * 60)
+                    },
+                    set: { date in
+                        let components = Calendar.current.dateComponents([.hour, .minute], from: date)
+                        confirmationSettings.confirmationTimeMinutes = (components.hour ?? 21) * 60 + (components.minute ?? 0)
+                        store.setWakeConfirmation(confirmationSettings)
+                    }
+                ), displayedComponents: .hourAndMinute)
+            }
+        } header: {
+            Label("Réveil intelligent", systemImage: "alarm.fill")
+        } footer: {
+            Text("La confirmation quotidienne (21 h par défaut) t'annonce le premier cours du lendemain et le réveil proposé. Elle est envoyée à partir des données déjà synchronisées : iOS ne garantit pas une exécution en arrière-plan exacte, ni une consultation PRONOTE à heure fixe.")
+        }
+    }
+
+    // MARK: - Notifications (LOT 8)
+
+    @State private var testNotificationResult: String?
+
+    private var notificationsSection: some View {
+        Section {
+            NavigationLink {
+                NotificationRulesView(rules: store.notificationRules) {
+                    await store.notifications.sendTestNotification()
+                }
+            } label: {
+                Label("Règles personnalisées", systemImage: "slider.horizontal.3")
+            }
+
+            Button {
+                Task { testNotificationResult = await store.notifications.sendTestNotification() }
+            } label: {
+                Label("Envoyer une notification de test", systemImage: "paperplane.fill")
+            }
+            if let testNotificationResult {
+                Text(testNotificationResult)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Label("Notifications", systemImage: "bell.badge.fill")
+        } footer: {
+            Text("Les notifications respectent l'autorisation iOS : si elles sont refusées, rien n'apparaît et l'application te l'explique.")
+        }
+    }
+
+    // MARK: - Debug (LOT 8 : tests manuels des réveils et notifications)
+
+    @State private var debugLog: [String] = []
+    @State private var pendingNotificationCount: Int?
+
+    private var debugSection: some View {
+        Section {
+            Button {
+                Task { await debugScheduleAlarmInOneMinute() }
+            } label: {
+                Label("Alarme de test dans 1 minute (AlarmKit)", systemImage: "alarm.badge.clock")
+            }
+            if debugAlarmScheduled {
+                Button(role: .destructive) {
+                    Task { await debugCancelAlarm() }
+                } label: {
+                    Label("Annuler l'alarme de test", systemImage: "alarm.sleep")
+                }
+            }
+
+            Button {
+                Task { await debugScheduleNotificationInOneMinute() }
+            } label: {
+                Label("Notification de test dans 1 minute", systemImage: "bell.badge.clock")
+            }
+            if debugNotificationScheduled {
+                Button(role: .destructive) {
+                    Task { await debugCancelTestNotifications() }
+                } label: {
+                    Label("Annuler uniquement les notifications de test", systemImage: "bell.slash")
+                }
+            }
+
+            Button {
+                Task { await debugPlanConfirmationNow() }
+            } label: {
+                Label("Synchroniser et recalculer AutoWake", systemImage: "clock.arrow.circlepath")
+            }
+
+            Button {
+                Task { await debugConfirmationInOneMinute() }
+            } label: {
+                Label("Test de confirmation AutoWake dans 1 minute", systemImage: "clock.badge.checkmark")
+            }
+
+            Button {
+                Task { await debugShowPending() }
+            } label: {
+                Label("Compter les notifications planifiées", systemImage: "list.bullet.circle")
+            }
+
+            if let pendingNotificationCount {
+                Text("Notifications actuellement planifiées : \(pendingNotificationCount)")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            if !debugLog.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(debugLog.enumerated().reversed()), id: \.offset) { _, line in
+                        Text(line).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                .textSelection(.enabled)
+            }
+
+            Button(role: .destructive) {
+                debugLog = []
+                pendingNotificationCount = nil
+            } label: {
+                Label("Effacer le journal", systemImage: "eraser")
+            }
+        } header: {
+            Label("Debug", systemImage: "wrench.and.screwdriver.fill")
+        } footer: {
+            Text("Outils de test manuel. L'alarme de test et les notifications de test sont indépendantes des alarmes AutoWake et manuelles. Si aucune donnée exploitable n'existe, une explication est affichée : aucun faux cours n'est créé.")
+        }
+    }
+
+    private func debugLogLine(_ line: String) {
+        debugLog.append("\(DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)) — \(line)")
+    }
+
+    /// Alarme de test Debug : store ISOLÉ (jamais l'alarme AutoWake ni manuelle).
+    private static let debugAlarmKey = "debug.testAlarm"
+    @State private var debugAlarmScheduled = false
+    @State private var debugNotificationScheduled = false
+
+    private func debugScheduleAlarmInOneMinute() async {
+        // Indépendance : on n'utilise PAS AlarmManager « à l'aveugle » — l'alarme
+        // de test a son propre identifiant mémorisé localement ( UserDefaults).
+        do {
+            let id = try await AlarmManager.shared.schedule(at: Date().addingTimeInterval(60))
+            UserDefaults.standard.set(id.uuidString, forKey: Self.debugAlarmKey)
+            debugAlarmScheduled = true
+            debugLogLine("Alarme de test programmée dans 1 min (id \(id.uuidString.prefix(8))).")
+        } catch {
+            debugAlarmScheduled = false
+            UserDefaults.standard.removeObject(forKey: Self.debugAlarmKey)
+            debugLogLine("Alarme en échec : \(error.localizedDescription)")
+        }
+    }
+
+    private func debugCancelAlarm() async {
+        guard let rawID = UserDefaults.standard.string(forKey: Self.debugAlarmKey) else { return }
+        // AlarmManager ne permet d'annuler que par identifiant connu : on réutilise
+        // le protocol AlarmScheduling via l'instance partagée.
+        let scheduler = AlarmManager.shared as AlarmScheduling
+        try? scheduler.cancel(id: UUID(uuidString: rawID) ?? UUID())
+        UserDefaults.standard.removeObject(forKey: Self.debugAlarmKey)
+        debugAlarmScheduled = false
+        debugLogLine("Alarme de test annulée.")
+    }
+
+    private func debugScheduleNotificationInOneMinute() async {
+        do {
+            try await store.notifications.sendTestNotificationAfter(60)
+            debugNotificationScheduled = true
+            debugLogLine("Notification de test planifiée dans 1 min.")
+        } catch {
+            debugNotificationScheduled = false
+            debugLogLine("Notification en échec : \(error.localizedDescription)")
+        }
+    }
+
+    /// Annule UNIQUEMENT les notifications de test (jamais tout le reste :
+    /// confirmations, règles et alarmes ne sont pas touchées).
+    private func debugCancelTestNotifications() async {
+        await store.notifications.cancelTestNotifications()
+        debugNotificationScheduled = false
+        debugLogLine("Notifications de test annulées (confirmations et règles conservées).")
+    }
+
+    /// Test de confirmation AutoWake à +1 min, à partir des données DÉJÀ
+    /// synchronisées. Aucune connexion PRONOTE : si aucun plan n'est calculable,
+    /// une explication claire est affichée et AUCUN faux cours n'est créé.
+    private func debugConfirmationInOneMinute() async {
+        let plan = AutoWakeService.plan(entries: store.snapshot.timetable,
+                                        now: Date(),
+                                        settings: store.wakeSettings,
+                                        customWakeMinutesFromMidnight: store.customWakeMinutes)
+        guard let plan else {
+            debugLogLine("Confirmation impossible : aucun cours à venir dans l'emploi du temps synchronisé. Synchronise d'abord (ou passe en mode démo).")
+            return
+        }
+        guard let notification = WakeConfirmationService.notification(plan: plan, now: Date()) else {
+            debugLogLine("Confirmation impossible : contenu indisponible.")
+            return
+        }
+        // Identifiant de TEST distinct de la vraie confirmation (pas de collision).
+        let testNotification = WakeNotification(
+            id: "wake.confirm.debug",
+            title: "[Test] \(notification.title)",
+            body: notification.body,
+            threadID: notification.threadID,
+            triggerDelay: 60)
+        do {
+            try await store.notifications.scheduleDebug(testNotification)
+            debugLogLine("Confirmation de test planifiée dans 1 min : \(notification.body)")
+        } catch {
+            debugLogLine("Confirmation en échec : \(error.localizedDescription)")
+        }
+    }
+
+    private func debugPlanConfirmationNow() async {
+        await store.refresh()
+        debugLogLine("Synchronisation + re-planification AutoWake effectuées.")
+    }
+
+    private func debugShowPending() async {
+        let count = await store.notifications.pendingCount()
+        pendingNotificationCount = count
+        debugLogLine("\(count) notification(s) en attente.")
+    }
 
     private var alarmSection: some View {
         Section {
