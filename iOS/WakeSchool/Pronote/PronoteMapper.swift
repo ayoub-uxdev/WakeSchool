@@ -350,7 +350,10 @@ enum PronoteMapper {
         var rejected: [String: Int] = [:]
         var seen = Set<UUID>()
         for item in items {
-            guard let value = PronoteJSON.number(findValue(in: item, keys: ["note", "Note", "valeur", "grade"])) else {
+            // Statut non numérique (ABS…) : conservé tel quel, jamais converti en 0.
+            let value = PronoteJSON.number(findValue(in: item, keys: ["note", "Note", "valeur", "grade"]))
+            let status = gradeValueStatus(findValue(in: item, keys: ["note", "Note", "valeur", "grade"]))
+            guard value != nil || status != nil else {
                 rejected[PronoteGradeRejection.missingOrInvalidValue.rawValue, default: 0] += 1
                 continue
             }
@@ -368,13 +371,19 @@ enum PronoteMapper {
             let subjectName = extractName(subjectValue) ?? "Matière"
             let subject = Subject(id: stableID(prefix: "subject", value: extractID(subjectValue) ?? subjectName), name: subjectName)
             let title = PronoteJSON.string(findValue(in: item, keys: ["devoir", "titre", "title", "nom"]))
-            let rawID = extractID(item) ?? "\(subjectName)|\(value)|\(outOf)|\(date.timeIntervalSince1970)|\(title ?? "")"
+            let rawID = extractID(item) ?? "\(subjectName)|\(value?.description ?? status?.rawValue ?? "?")|\(outOf)|\(date.timeIntervalSince1970)|\(title ?? "")"
             let id = stableID(prefix: "grade", value: rawID)
             guard seen.insert(id).inserted else {
                 rejected[PronoteGradeRejection.duplicate.rawValue, default: 0] += 1
                 continue
             }
-            result.append(Grade(id: id, subject: subject, value: value, outOf: outOf, coefficient: coefficient, date: date, title: title))
+            let grade: Grade
+            if let value = value {
+                grade = Grade(id: id, subject: subject, value: value, outOf: outOf, coefficient: coefficient, date: date, title: title)
+            } else {
+                grade = Grade(id: id, subject: subject, status: status ?? .absent, outOf: outOf, coefficient: coefficient, date: date, title: title)
+            }
+            result.append(grade)
         }
         return PronoteGradeMappingResult(
             grades: result.sorted { $0.date > $1.date },
@@ -385,6 +394,58 @@ enum PronoteMapper {
     static func rawTimetableCount(from response: Any) -> Int {
         protocolItems(from: response, keys: ["ListeCours"])?.count
             ?? timetable(from: response).count
+    }
+
+    /// Contrôles (DS) à venir extraits de la réponse EMPLOI DU TEMPS.
+    ///
+    /// Contrat PRONOTE confirmé via pronotepy (`Lesson.test`) : un devoir
+    /// surveillé est un item de `ListeCours` dont le sous-objet
+    /// `cahierDeTextes.V.estDevoir` vaut vrai. Le titre est la description
+    /// du cahier de textes si fournie — aucune donnée inventée.
+    static func exams(from response: Any) -> [Exam] {
+        guard let lessons = protocolItems(from: response, keys: ["ListeCours"]) else {
+            return []
+        }
+
+        var result: [Exam] = []
+        var seen = Set<UUID>()
+        for lesson in lessons {
+            guard PronoteJSON.bool(nestedValue(lesson, keys: ["cahierDeTextes", "estDevoir"])) == true,
+                  let date = PronoteJSON.date(lesson["DateDuCours"]) else {
+                continue
+            }
+            let contents = (lesson["ListeContenus"] as? [String: Any])?["V"] as? [[String: Any]] ?? []
+            let subjectContent = contents.first { PronoteJSON.number($0["G"]) == 16 }
+            let subjectName = extractName(subjectContent) ?? "Matière"
+            let subject = Subject(id: stableID(prefix: "subject", value: extractID(subjectContent) ?? subjectName), name: subjectName)
+
+            let description = PronoteJSON.string(nestedValue(lesson, keys: ["cahierDeTextes", "descriptif"]))
+            let title = description.map { HomeworkDescriptionFormatter.plainText(from: $0) }
+                .flatMap { $0.isEmpty ? nil : $0 } ?? "Devoir surveillé"
+
+            let rawID = extractID(lesson) ?? "\(subjectName)|\(date.timeIntervalSince1970)|exam"
+            let id = stableID(prefix: "exam", value: rawID)
+            guard seen.insert(id).inserted else { continue }
+            result.append(Exam(id: id, subject: subject, date: date, title: title))
+        }
+        return result.sorted { $0.date < $1.date }
+    }
+
+    /// Lit `keys` successivement dans un dictionnaire imbriqué en gérant
+    /// les enveloppes PRONOTE typées ({"_T": n, "V": …}).
+    private static func nestedValue(_ dictionary: [String: Any], keys: [String]) -> Any? {
+        var current: Any = dictionary
+        for key in keys {
+            guard let dict = current as? [String: Any],
+                  let value = dict[key] else { return nil }
+            // Enveloppe typée : {"_T": n, "V": …} → descendre dans "V".
+            if let wrapped = value as? [String: Any], let inner = wrapped["V"] {
+                current = inner
+            } else {
+                current = value
+            }
+        }
+        return current
     }
 
     static func rawHomeworkCount(from response: Any) -> Int {
@@ -448,6 +509,18 @@ enum PronoteMapper {
         let teacher: Teacher? = teacherName.isEmpty
             ? nil
             : Teacher(id: stableID(prefix: "teacher", value: teacherName), name: teacherName)
+
+        // Contrat PRONOTE (confirmé via pronotepy Lesson) : seul `estAnnule` est un
+        // drapeau fiable ; `Statut` (texte libre) et `memo` décrivent le changement.
+        // Aucun champ de lien initial↔remplacement n'est présent dans la réponse :
+        // WakeSchool n'invente donc JAMAIS de rapprochement entre deux cours.
+        let cancelled = PronoteJSON.bool(lesson["estAnnule"]) ?? false
+        let statusText = PronoteJSON.string(lesson["Statut"])
+        let memoText = PronoteJSON.string(lesson["memo"])
+        // Un cours non annulé dont le Statut décrit un changement (professeur ou
+        // matière remplacé) est marqué « modifié » pour être visible dans l'UI.
+        let modified = !cancelled && modificationStatusText(statusText) != nil
+
         return TimetableEntry(
             id: id,
             subject: subject,
@@ -455,10 +528,25 @@ enum PronoteMapper {
             room: rooms.isEmpty ? nil : rooms.joined(separator: ", "),
             start: start,
             end: end,
-            isCancelled: PronoteJSON.bool(lesson["estAnnule"]) ?? false,
-            isModified: false,
-            changeNote: PronoteJSON.string(lesson["memo"])
+            isCancelled: cancelled,
+            isModified: modified,
+            changeNote: [statusText, memoText].compactMap { $0 }.joined(separator: " — ").isEmpty
+                ? nil
+                : [statusText, memoText].compactMap { $0 }.joined(separator: " — ")
         )
+    }
+
+    /// Détecte, dans le texte libre `Statut` de PRONOTE, un changement de cours
+    /// (professeur remplacé, matière remplacée…). Aucune déduction au-delà du texte :
+    /// si le texte ne décrit pas un remplacement, la fonction renvoie nil.
+    private static func modificationStatusText(_ status: String?) -> String? {
+        guard let status = status?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !status.isEmpty else {
+            return nil
+        }
+        let lowered = status.lowercased()
+        let markers = ["remplac", "professeur remplacé", "prof remplacé", "modifié", "modifie", "chang"]
+        return markers.contains { lowered.contains($0) } ? status : nil
     }
 
     private static func protocolLessonEnd(
@@ -555,11 +643,24 @@ enum PronoteMapper {
         }
     }
 
+    /// Statut non numérique d'une note PRONOTE (« ABS », « Disp », « NA »…).
+    /// Une note numérique est prioritaire ; seul un texte non convertible en nombre,
+    /// reconnu comme statut connu, est conservé comme évaluation non numérique.
+    private static func gradeValueStatus(_ noteValue: Any?) -> GradeValueStatus? {
+        guard let text = PronoteJSON.string(noteValue) else { return nil }
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
+        case "abs", "absent": return .absent
+        case "disp", "dispensé", "dispense": return .dispensed
+        case "na", "n.a", "non évalué", "non evalue": return .notAssessed
+        default: return nil
+        }
+    }
+
     private static func protocolGrade(
         from item: [String: Any]
     ) -> Grade? {
-        guard let value = PronoteJSON.number(item["note"]),
-              let date = PronoteJSON.date(item["date"]),
+        guard let date = PronoteJSON.date(item["date"]),
               let subjectValue = (item["service"] as? [String: Any])?["V"] ?? item["service"] else {
             return nil
         }
@@ -572,6 +673,24 @@ enum PronoteMapper {
             name: subjectName
         )
         let title = PronoteJSON.string(item["commentaire"])
+
+        // Statut non numérique (ABS…) : conservé tel quel, jamais converti en 0.
+        if let status = gradeValueStatus(item["note"]) {
+            let rawID = extractID(item) ?? "\(subjectName)|\(status.rawValue)|\(outOf)|\(date.timeIntervalSince1970)|\(title ?? "")"
+            return Grade(
+                id: stableID(prefix: "grade", value: rawID),
+                subject: subject,
+                status: status,
+                outOf: outOf,
+                coefficient: coefficient,
+                date: date,
+                title: title
+            )
+        }
+
+        guard let value = PronoteJSON.number(item["note"]) else {
+            return nil
+        }
         let rawID = extractID(item) ?? "\(subjectName)|\(value)|\(outOf)|\(date.timeIntervalSince1970)|\(title ?? "")"
         return Grade(
             id: stableID(prefix: "grade", value: rawID),
@@ -587,7 +706,8 @@ enum PronoteMapper {
     private static func protocolGradeRejection(
         for item: [String: Any]
     ) -> PronoteGradeRejection {
-        guard PronoteJSON.number(item["note"]) != nil else {
+        // Un statut non numérique (ABS…) n'est pas un rejet : il est mappé.
+        guard PronoteJSON.number(item["note"]) != nil || gradeValueStatus(item["note"]) != nil else {
             return .missingOrInvalidValue
         }
         guard PronoteJSON.date(item["date"]) != nil else {

@@ -10,7 +10,14 @@ struct GradesView: View {
             let now = Date()
             let general = AverageCalculator.generalAverage(of: snapshot.averages)
             let grades = AverageCalculator.recentGrades(snapshot.grades, limit: snapshot.grades.count)
-            let exams = ExamService.upcoming(snapshot.exams, now: now, withinDays: 60)
+            // Horizon DS : l'emploi du temps PRONOTE est récupéré sur la semaine
+            // courante + 2 suivantes, ce qui ne couvre PAS 21 jours glissants de
+            // façon garantie. La fenêtre affichée est donc une borne MAXIMALE de
+            // la couverture source — l'écran ne prétend pas lister tous les
+            // contrôles à venir, seulement ceux visibles dans l'emploi du temps
+            // récupéré (une annoncée lointaine peut manquer). 3 semaines reste
+            // raisonnable en nombre de requêtes.
+            let exams = ExamService.upcoming(snapshot.exams, now: now, withinDays: 21)
 
             ScrollView {
                 VStack(spacing: 22) {
@@ -127,7 +134,8 @@ struct GradesView: View {
     }
 
     private func gradeRow(_ grade: Grade) -> some View {
-        let tint = WakeTheme.color(for: GradeLevel(value: grade.normalizedValue))
+        // Une évaluation non numérique (ABS…) n'a ni couleur de niveau ni barème affiché.
+        let tint = grade.isNumeric ? WakeTheme.color(for: GradeLevel(value: grade.normalizedValue ?? 0)) : Color.white.opacity(0.6)
         return HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(grade.title ?? "Note").font(.headline)
@@ -140,7 +148,9 @@ struct GradesView: View {
             }
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 2) {
-                Text("\(WakeFormat.number(grade.value))/\(WakeFormat.number(grade.outOf))")
+                Text(grade.isNumeric
+                     ? "\(WakeFormat.number(grade.numericValue ?? 0))/\(WakeFormat.number(grade.outOf))"
+                     : grade.displayValue)
                     .font(.headline)
                     .monospacedDigit()
                     .foregroundStyle(tint)
@@ -160,8 +170,8 @@ struct GradesView: View {
         VStack(alignment: .leading, spacing: 12) {
             WakeSectionHeader(title: "Contrôles à venir")
             if exams.isEmpty {
-                EmptyStateCard(symbol: "checklist", title: "Aucun contrôle prévu",
-                               message: "Rien de planifié pour les prochaines semaines.")
+                EmptyStateCard(symbol: "checklist", title: "Aucun contrôle annoncé",
+                               message: "Les contrôles annoncés dans l'emploi du temps des prochaines semaines apparaîtront ici.")
             } else {
                 VStack(spacing: 14) {
                     ForEach(exams) { exam in

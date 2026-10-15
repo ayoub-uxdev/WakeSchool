@@ -37,6 +37,6 @@ final class AverageCalculatorTests: XCTestCase {
 
     func testRecentGradesAreNewestFirst() {
         let grades = [T.grade(10, day: 1), T.grade(11, day: 5), T.grade(12, day: 3)]
-        XCTAssertEqual(AverageCalculator.recentGrades(grades, limit: 2).map(\.value), [11, 12])
+        XCTAssertEqual(AverageCalculator.recentGrades(grades, limit: 2).map(\.numericValue), [11, 12])
     }
 }

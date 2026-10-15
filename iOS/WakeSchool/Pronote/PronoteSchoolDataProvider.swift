@@ -139,6 +139,25 @@ struct PronoteSchoolDataProvider: SchoolDataProvider, SchoolSyncDiagnosticsRepor
         try await client.getTimetable()
     }
 
+    /// Synchronisation en UNE SEULE récupération emploi du temps :
+    /// `client.getTimetableAndExams()` dérive les DS des MÊMES réponses réseau
+    /// que les cours (pas de 2ᵉ boucle PageEmploiDuTemps). Les notes sont aussi
+    /// récupérées UNE SEULE fois : les moyennes sont calculées localement à partir
+    /// de ce même tableau (il n'existe pas de moyennes officielles PRONOTE dans
+    /// cette intégration). Les erreurs restent propagées telles quelles.
+    func snapshot() async throws -> SchoolSnapshot {
+        let timetableAndExams = try await client.getTimetableAndExams()
+        let grades = try await client.getGrades()
+        return SchoolSnapshot(
+            timetable: timetableAndExams.entries,
+            homework: try await homework(),
+            grades: grades,
+            averages: AverageCalculator.subjectAverages(from: grades),
+            exams: timetableAndExams.exams,
+            events: try await events()
+        )
+    }
+
     func homework() async throws -> [Homework] {
         try await client.getHomework()
     }
@@ -148,7 +167,11 @@ struct PronoteSchoolDataProvider: SchoolDataProvider, SchoolSyncDiagnosticsRepor
     }
 
     func exams() async throws -> [Exam] {
-        []
+        // DS dérivés de l'emploi du temps. Appelé SEUL, ce chemin déclenche la
+        // récupération complète emploi du temps + DS (la source des DS est la
+        // réponse PageEmploiDuTemps). La synchronisation normale utilise
+        // `snapshot()`, qui récupère le tout en une seule passe.
+        try await client.getTimetableAndExams().exams
     }
 
     func events() async throws -> [SchoolEvent] {

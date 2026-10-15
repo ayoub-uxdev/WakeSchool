@@ -244,7 +244,9 @@ struct HomeworkRow: View {
         case .normal:
             WakeBadge(text: homework.priority.displayLabel, systemImage: "minus.circle", tint: .gray)
         case .unspecified:
-            WakeBadge(text: homework.priority.displayLabel, systemImage: "questionmark.circle", tint: .gray)
+            // PRONOTE ne fournit aucune importance : pas de badge bruité.
+            // Les priorités définies localement par l'utilisateur restent affichées.
+            EmptyView()
         }
     }
 }

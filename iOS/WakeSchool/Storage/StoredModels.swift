@@ -100,26 +100,46 @@ final class StoredGrade {
     var outOf: Double
     var coefficient: Double
     var date: Date
+    /// Statut non numérique de la note (« ABS », « Disp », « NA »).
+    /// nil = note numérique (`value` fait foi). Ajout LOT 8 : les anciennes
+    /// lignes créées avant cet attribut ont une valeur nil lue par SwiftData,
+    /// ce qui correspond bien à une note numérique.
+    var statusRaw: String?
 
     init(_ grade: Grade) {
         id = grade.id
         subjectID = grade.subject.id
         subjectName = grade.subject.name
         title = grade.title
-        value = grade.value
+        value = grade.value.numeric ?? 0
         outOf = grade.outOf
         coefficient = grade.coefficient
         date = grade.date
+        if case .status(let status) = grade.value {
+            statusRaw = status.rawValue
+        } else {
+            statusRaw = nil
+        }
     }
 
     var grade: Grade {
-        Grade(id: id,
-              subject: Subject(id: subjectID, name: subjectName),
-              value: value,
-              outOf: outOf,
-              coefficient: coefficient,
-              date: date,
-              title: title)
+        if let statusRaw,
+           let status = GradeValueStatus(rawValue: statusRaw) {
+            return Grade(id: id,
+                         subject: Subject(id: subjectID, name: subjectName),
+                         status: status,
+                         outOf: outOf,
+                         coefficient: coefficient,
+                         date: date,
+                         title: title)
+        }
+        return Grade(id: id,
+                     subject: Subject(id: subjectID, name: subjectName),
+                     value: value,
+                     outOf: outOf,
+                     coefficient: coefficient,
+                     date: date,
+                     title: title)
     }
 }
 

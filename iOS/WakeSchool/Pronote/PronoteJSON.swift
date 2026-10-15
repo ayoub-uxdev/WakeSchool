@@ -145,10 +145,10 @@ enum PronoteJSON {
 
         case let value as String:
             switch value.lowercased() {
-            case "true", "1", "oui", "yes":
+            case "true", "1", "oui", "yes", "vrai":
                 return true
 
-            case "false", "0", "non", "no":
+            case "false", "0", "non", "no", "faux":
                 return false
 
             default:

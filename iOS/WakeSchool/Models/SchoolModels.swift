@@ -1,6 +1,66 @@
 import Foundation
 
-// MARK: - Emploi du temps
+/// Valeur d'une évaluation : numérique ou statut non numérique (ABS, Disp, NA…).
+/// Un statut non numérique n'est JAMAIS converti en zéro ni inclus dans les moyennes.
+enum GradeValueStatus: String, Codable, Hashable {
+    case absent = "ABS"
+    case dispensed = "Disp"
+    case notAssessed = "NA"
+}
+
+enum GradeValue: Codable, Hashable {
+    case numeric(Double)
+    case status(GradeValueStatus)
+
+    /// Valeur numérique uniquement (nil pour un statut non numérique).
+    var numeric: Double? {
+        switch self {
+        case .numeric(let value): return value
+        case .status: return nil
+        }
+    }
+
+    /// Texte affichable : « 12,5 » ou « ABS ». Format autonome (Models ne dépend
+    /// ni de l'UI ni de Services, cf. ARCHITECTURE.md).
+    var displayValue: String {
+        switch self {
+        case .numeric(let value):
+            let formatter = NumberFormatter()
+            formatter.locale = Locale(identifier: "fr_FR")
+            formatter.minimumFractionDigits = 0
+            formatter.maximumFractionDigits = 1
+            return formatter.string(from: NSNumber(value: value)) ?? "\(value)"
+        case .status(let status):
+            return status.rawValue
+        }
+    }
+
+    /// True si la valeur participe aux calculs de moyenne.
+    var isNumeric: Bool { numeric != nil }
+
+    private enum CodingKeys: String, CodingKey {
+        case numericValue
+        case statusRaw
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let raw = try container.decodeIfPresent(String.self, forKey: .statusRaw),
+           let status = GradeValueStatus(rawValue: raw) {
+            self = .status(status)
+        } else {
+            self = .numeric(try container.decode(Double.self, forKey: .numericValue))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .numeric(let value): try container.encode(value, forKey: .numericValue)
+        case .status(let status): try container.encode(status.rawValue, forKey: .statusRaw)
+        }
+    }
+}
 
 /// Statut d'un cours, dérivé de `isCancelled` / `isModified`.
 enum CourseStatus: String, Codable, Hashable {
@@ -28,7 +88,7 @@ struct TimetableEntry: Identifiable, Codable, Hashable {
     }
 }
 
-// MARK: - Devoirs
+    // MARK: - Devoirs
 
 enum HomeworkPriority: Int, Codable, Hashable, Comparable {
     case low = 0
@@ -81,16 +141,51 @@ struct HomeworkAttachment: Identifiable, Codable, Hashable {
 struct Grade: Identifiable, Codable, Hashable {
     let id: UUID
     var subject: Subject
-    var value: Double
+    var value: GradeValue
     var outOf: Double
     var coefficient: Double = 1
     var date: Date
     var title: String? = nil
 
-    /// Note ramenée sur 20. 0 si le barème est invalide.
-    var normalizedValue: Double {
-        outOf > 0 ? value / outOf * 20 : 0
+    /// Création d'une note numérique (cas le plus courant).
+    init(id: UUID, subject: Subject, value: Double, outOf: Double, coefficient: Double = 1, date: Date, title: String? = nil) {
+        self.id = id
+        self.subject = subject
+        self.value = .numeric(value)
+        self.outOf = outOf
+        self.coefficient = coefficient
+        self.date = date
+        self.title = title
     }
+
+    /// Création d'une évaluation non numérique (ABS, Disp, NA…).
+    /// `outOf` est conservé tel que PRONOTE l'a fourni ;
+    /// il n'est jamais utilisé pour transformer le statut en valeur chiffrée.
+    init(id: UUID, subject: Subject, status: GradeValueStatus, outOf: Double = 20, coefficient: Double = 1, date: Date, title: String? = nil) {
+        self.id = id
+        self.subject = subject
+        self.value = .status(status)
+        self.outOf = outOf
+        self.coefficient = coefficient
+        self.date = date
+        self.title = title
+    }
+
+    /// Valeur numérique de la note, nil si la note est un statut non numérique.
+    var numericValue: Double? { value.numeric }
+
+    /// Note ramenée sur 20. Uniquement pour une note numérique ;
+    /// une évaluation ABS/Disp/NA n'a pas de valeur normalisée.
+    var normalizedValue: Double? {
+        guard let value = value.numeric else { return nil }
+        return outOf > 0 ? value / outOf * 20 : nil
+    }
+
+    /// Texte affichable : « 12,5 » ou « ABS ».
+    var displayValue: String { value.displayValue }
+
+    /// True si l'évaluation participe aux calculs de moyenne.
+    var isNumeric: Bool { value.isNumeric }
 }
 
 struct SubjectAverage: Identifiable, Codable, Hashable {

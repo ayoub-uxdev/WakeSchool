@@ -205,17 +205,7 @@ final class LivePronoteClient: PronoteClient, PronoteDataDiagnosticsReporting {
 
     // MARK: - Timetable
 
-    func getTimetable() async throws -> [TimetableEntry] {
-        dataDiagnostics.timetable = PronoteDatasetDiagnostics(callStatus: .failed)
-        do {
-            return try await fetchTimetable()
-        } catch {
-            recordDatasetFailure(.timetable, error: error, fallbackStage: "PageEmploiDuTemps")
-            throw error
-        }
-    }
-
-    private func fetchTimetable() async throws -> [TimetableEntry] {
+    private func fetchTimetableAndExams() async throws -> ([TimetableEntry], [Exam]) {
         let client = try await connectedClient()
 
         let resource = try await loadResource(
@@ -256,6 +246,7 @@ final class LivePronoteClient: PronoteClient, PronoteDataDiagnosticsReporting {
 
         var entries: [TimetableEntry] = []
         var rawCount = 0
+        var exams: [Exam] = []
 
         for week in currentWeek...(currentWeek + 2) {
 
@@ -268,16 +259,56 @@ final class LivePronoteClient: PronoteClient, PronoteDataDiagnosticsReporting {
                 from: response,
                 schoolDayEndTimes: schoolDayEndTimes
             ))
+            exams.append(contentsOf: PronoteMapper.exams(from: response))
                 dataDiagnostics.timetable.rawCount = rawCount
                 dataDiagnostics.timetable.convertedCount = deduplicate(entries).count
         }
 
         let result = deduplicate(entries)
+        let deduplicatedExams = deduplicateExams(exams)
         dataDiagnostics.timetable.callStatus = .succeeded
         dataDiagnostics.timetable.rawCount = rawCount
         dataDiagnostics.timetable.convertedCount = result.count
         dataDiagnostics.schoolPeriodIdentified = !periods.isEmpty && schoolYearStart != nil
-        return result
+        return (result, deduplicatedExams)
+    }
+
+    // MARK: - Timetable
+
+    func getTimetable() async throws -> [TimetableEntry] {
+        dataDiagnostics.timetable = PronoteDatasetDiagnostics(callStatus: .failed)
+        do {
+            return try await fetchTimetableAndExams().0
+        } catch {
+            recordDatasetFailure(.timetable, error: error, fallbackStage: "PageEmploiDuTemps")
+            throw error
+        }
+    }
+
+    // MARK: - Emploi du temps + contrôles (DS)
+
+    /// Emploi du temps ET contrôles en UNE SEULE récupération réseau :
+    /// les DS sont dérivés des MÊMES réponses PageEmploiDuTemps que les cours
+    /// et renvoyés avec elles en résultat direct — AUCUN état partagé mutable
+    /// entre synchronisations concurrentes. Les erreurs sont propagées :
+    /// aucun cache périmé, aucune erreur masquée.
+    func getTimetableAndExams() async throws -> (entries: [TimetableEntry], exams: [Exam]) {
+        dataDiagnostics.timetable = PronoteDatasetDiagnostics(callStatus: .failed)
+        do {
+            let (entries, exams) = try await fetchTimetableAndExams()
+            return (entries, exams)
+        } catch {
+            recordDatasetFailure(.timetable, error: error, fallbackStage: "PageEmploiDuTemps")
+            throw error
+        }
+    }
+
+    private func deduplicateExams(_ exams: [Exam]) -> [Exam] {
+        var map: [UUID: Exam] = [:]
+        for exam in exams {
+            map[exam.id] = exam
+        }
+        return map.values.sorted { $0.date < $1.date }
     }
 
     // MARK: - Homework

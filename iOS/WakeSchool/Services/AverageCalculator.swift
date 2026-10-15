@@ -3,12 +3,15 @@ import Foundation
 /// Calcul des moyennes. Toutes les valeurs sont ramenées sur 20.
 enum AverageCalculator {
 
-    /// Moyenne pondérée par les coefficients. Ignore les notes au barème ou coefficient invalide.
+    /// Moyenne pondérée par les coefficients. Ignore les notes au barème ou coefficient invalide,
+    /// ainsi que les évaluations non numériques (ABS, Disp, NA) : jamais converties en zéro.
     static func weightedAverage(of grades: [Grade]) -> Double? {
-        let valid = grades.filter { $0.outOf > 0 && $0.coefficient > 0 }
+        let valid = grades.filter { $0.isNumeric && $0.outOf > 0 && $0.coefficient > 0 }
         guard !valid.isEmpty else { return nil }
         let totalCoefficient = valid.reduce(0) { $0 + $1.coefficient }
-        let weightedSum = valid.reduce(0) { $0 + $1.normalizedValue * $1.coefficient }
+        let weightedSum = valid.reduce(0.0) { sum, grade in
+            sum + (grade.normalizedValue ?? 0) * grade.coefficient
+        }
         return weightedSum / totalCoefficient
     }
 

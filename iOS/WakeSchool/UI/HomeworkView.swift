@@ -147,11 +147,13 @@ struct HomeworkView: View {
                             .font(.subheadline)
                             .foregroundStyle(.white.opacity(0.75))
 
-                            WakeBadge(
-                                text: homework.priority.displayLabel,
-                                systemImage: prioritySymbol,
-                                tint: priorityTint
-                            )
+                            if homework.priority != .unspecified {
+                                WakeBadge(
+                                    text: homework.priority.displayLabel,
+                                    systemImage: prioritySymbol,
+                                    tint: priorityTint
+                                )
+                            }
 
                             if homework.details.isEmpty {
                                 Text("Aucune description fournie.")
