@@ -115,15 +115,23 @@ enum NotificationRuleService {
                 let body = grade.isNumeric
                     ? "\(subject) : \(grade.displayValue)/\(Int(grade.outOf)) a été publiée."
                     : "\(subject) : une évaluation « \(grade.displayValue) » a été publiée."
-                result.append(.rule("grade", grade.id.uuidString, title, body))
+                result.append(.rule(
+                    "grade",
+                    subjectKey: grade.id.uuidString,
+                    title: title,
+                    body: body
+                ))
             }
         }
 
         if let rule = rules.first(where: { $0.kind == .newExam }), rule.isEnabled {
             for exam in changes.newExams {
-                result.append(.rule("exam", exam.id.uuidString,
-                                    "Nouveau contrôle",
-                                    "\(exam.subject.name) : \(exam.title), le \(DateLabels.dayTitle(exam.date))."))
+                result.append(.rule(
+                    "exam",
+                    subjectKey: exam.id.uuidString,
+                    title: "Nouveau contrôle",
+                    body: "\(exam.subject.name) : \(exam.title), le \(DateLabels.dayTitle(exam.date))."
+                ))
             }
         }
 

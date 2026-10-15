@@ -236,7 +236,12 @@ final class NotificationOrchestrator: ObservableObject {
                 homework: homework,
                 now: current,
                 calendar: calendar) {
-            let notification = WakeNotification.rule("homework", WakeNotification.dayKey(sendDate, calendar: calendar), message.title, message.body)
+            let notification = WakeNotification.rule(
+                "homework",
+                subjectKey: WakeNotification.dayKey(sendDate, calendar: calendar),
+                title: message.title,
+                body: message.body
+            )
             try? await scheduler.schedule(notification, at: sendDate)
         }
     }
