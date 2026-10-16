@@ -403,10 +403,23 @@ enum PronoteMapper {
     /// `cahierDeTextes.V.estDevoir` vaut vrai. Le titre est la description
     /// du cahier de textes si fournie — aucune donnée inventée.
     static func exams(from response: Any) -> [Exam] {
-        guard let lessons = protocolItems(from: response, keys: ["ListeCours"]) else {
-            return []
+        if let lessons = protocolItems(from: response, keys: ["ListeCours"]) {
+            return examsFromLessons(lessons)
         }
 
+        // Réponse non conforme au protocole : même heuristique de secours que
+        // l'emploi du temps — sinon les DS disparaissent TOTALEMENT alors que
+        // les cours restent affichés via leur propre fallback.
+        let root = PronoteJSON.unwrap(response)
+        let candidates = collectDictionaries(root)
+        let lessons = candidates.filter { dictionary in
+            nestedValue(dictionary, keys: ["cahierDeTextes", "estDevoir"]) != nil
+        }
+        guard !lessons.isEmpty else { return [] }
+        return examsFromLessons(lessons)
+    }
+
+    private static func examsFromLessons(_ lessons: [[String: Any]]) -> [Exam] {
         var result: [Exam] = []
         var seen = Set<UUID>()
         for lesson in lessons {
@@ -419,7 +432,7 @@ enum PronoteMapper {
             let subjectName = extractName(subjectContent) ?? "Matière"
             let subject = Subject(id: stableID(prefix: "subject", value: extractID(subjectContent) ?? subjectName), name: subjectName)
 
-            let description = PronoteJSON.string(nestedValue(lesson, keys: ["cahierDeTextes", "descriptif"]))
+            let description = examDescription(lesson)
             let title = description.map { HomeworkDescriptionFormatter.plainText(from: $0) }
                 .flatMap { $0.isEmpty ? nil : $0 } ?? "Devoir surveillé"
 
@@ -446,6 +459,19 @@ enum PronoteMapper {
             }
         }
         return current
+    }
+
+    /// Description d'un DS : `descriptif.V` est soit une chaîne (ou enveloppe),
+    /// soit une LISTE d'items de contenu PRONOTE (chaque item porte un `L`).
+    private static func examDescription(_ lesson: [String: Any]) -> String? {
+        if let text = PronoteJSON.string(nestedValue(lesson, keys: ["cahierDeTextes", "descriptif"])) {
+            return text
+        }
+        guard let contents = nestedValue(lesson, keys: ["cahierDeTextes", "descriptif"]) as? [[String: Any]] else {
+            return nil
+        }
+        let labels = contents.compactMap { extractName($0) }
+        return labels.isEmpty ? nil : labels.joined(separator: ", ")
     }
 
     static func rawHomeworkCount(from response: Any) -> Int {

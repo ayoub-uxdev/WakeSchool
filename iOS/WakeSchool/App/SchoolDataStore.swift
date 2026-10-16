@@ -154,24 +154,28 @@ final class SchoolDataStore: ObservableObject {
         environment.preferences.knownExamIDs = ChangeDetectionService.examIDs(in: snapshot)
         environment.preferences.hasChangeDetectionBaseline = true
 
-        // Avant la première baseline : rien à signaler (pas d'avalanche).
-        guard hadBaseline else { return }
+        // Avant la première baseline : aucune avalanche de nouveautés,
+        // MAIS les automatisations (AutoWake, notifications planifiées) DOIVENT
+        // malgré tout s'exécuter dès la première synchronisation.
+        let changes = hadBaseline
+            ? ChangeDetectionService.detect(previousKnownGradeIDs: knownGrades,
+                                            previousKnownExamIDs: knownExams,
+                                            newSnapshot: snapshot)
+            : ChangeDetectionService.Changes()
 
-        let changes = ChangeDetectionService.detect(previousKnownGradeIDs: knownGrades,
-                                                    previousKnownExamIDs: knownExams,
-                                                    newSnapshot: snapshot)
-
-        // Le centre enregistre les changements même si les notifications système
-        // ne sont pas autorisées : le centre reste utile.
-        if !changes.newGrades.isEmpty {
-            notificationCenter.addIfNew(kind: .newGrade,
-                                        title: "Nouvelle\(changes.newGrades.count > 1 ? "s" : "") note\(changes.newGrades.count > 1 ? "s" : "")",
-                                        message: changes.newGrades.map { $0.subject.name }.joined(separator: ", "))
-        }
-        if !changes.newExams.isEmpty {
-            notificationCenter.addIfNew(kind: .newExam,
-                                        title: "Nouveau\(changes.newExams.count > 1 ? "x" : "") contrôle\(changes.newExams.count > 1 ? "s" : "")",
-                                        message: changes.newExams.map { $0.subject.name }.joined(separator: ", "))
+        if hadBaseline {
+            // Le centre enregistre les changements même si les notifications système
+            // ne sont pas autorisées : le centre reste utile.
+            if !changes.newGrades.isEmpty {
+                notificationCenter.addIfNew(kind: .newGrade,
+                                            title: "Nouvelle\(changes.newGrades.count > 1 ? "s" : "") note\(changes.newGrades.count > 1 ? "s" : "")",
+                                            message: changes.newGrades.map { $0.subject.name }.joined(separator: ", "))
+            }
+            if !changes.newExams.isEmpty {
+                notificationCenter.addIfNew(kind: .newExam,
+                                            title: "Nouveau\(changes.newExams.count > 1 ? "x" : "") contrôle\(changes.newExams.count > 1 ? "s" : "")",
+                                            message: changes.newExams.map { $0.subject.name }.joined(separator: ", "))
+            }
         }
 
         await environment.notifications.processAfterSync(
@@ -207,6 +211,10 @@ final class SchoolDataStore: ObservableObject {
         // reprogrammera selon l'emploi du temps.
         if !enabled {
             environment.autoWakeLifecycle.disable()
+        } else if !snapshot.timetable.isEmpty {
+            // Activation : programmation IMMÉDIATE si des données de
+            // synchronisation sont déjà disponibles (pas d'attente du prochain cycle).
+            Task { await recalculateAutoWake() }
         }
     }
 

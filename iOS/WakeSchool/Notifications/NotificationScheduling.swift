@@ -75,9 +75,15 @@ protocol NotificationScheduling: AnyObject {
 /// Implémentation réelle via UNUserNotificationCenter.
 final class SystemNotificationScheduler: NotificationScheduling {
     private let center: UNUserNotificationCenter
+    /// Sans ce délégué, iOS SUPPRIME silencieusement toute notification livrée
+    /// pendant que l'app est au premier plan (cas du bouton de test) : la
+    /// notification partait dans le centre sans jamais être visible.
+    private let foregroundPresenter: ForegroundNotificationPresenter
 
     init(center: UNUserNotificationCenter = .current()) {
         self.center = center
+        self.foregroundPresenter = ForegroundNotificationPresenter()
+        center.delegate = foregroundPresenter
     }
 
     func authorizationStatus() async -> UNAuthorizationStatus {
@@ -131,5 +137,16 @@ final class SystemNotificationScheduler: NotificationScheduling {
 
     func clearDelivered() async {
         center.removeAllDeliveredNotifications()
+    }
+}
+
+/// Délégué du centre de notifications : présente les alertes même quand
+/// l'application est au premier plan (sinon iOS les supprime silencieusement,
+/// ce qui rendait le bouton de notification de test inopérant).
+final class ForegroundNotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound, .badge])
     }
 }

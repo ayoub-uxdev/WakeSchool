@@ -220,7 +220,7 @@ final class NotificationTests: XCTestCase {
         scheduler.status = .denied
         let defaults = UserDefaults(suiteName: "NotificationTests-\(UUID().uuidString)")!
         let preferences = PreferencesStore(defaults: defaults)
-        let orchestrator = NotificationOrchestrator(scheduler: scheduler,
+        let orchestrator = (scheduler: scheduler,
                                                     center: NotificationCenterStore(defaults: defaults),
                                                     rules: NotificationRulesStore(defaults: defaults),
                                                     preferences: preferences)
@@ -234,7 +234,7 @@ final class NotificationTests: XCTestCase {
         let scheduler = MockNotificationScheduler()
         scheduler.status = .authorized
         let defaults = UserDefaults(suiteName: "NotificationTests-\(UUID().uuidString)")!
-        let orchestrator = NotificationOrchestrator(scheduler: scheduler,
+        let orchestrator = (scheduler: scheduler,
                                                     center: NotificationCenterStore(defaults: defaults),
                                                     rules: NotificationRulesStore(defaults: defaults),
                                                     preferences: PreferencesStore(defaults: defaults))
@@ -249,7 +249,7 @@ final class NotificationTests: XCTestCase {
         let defaults = UserDefaults(suiteName: "NotificationTests-\(UUID().uuidString)")!
         let preferences = PreferencesStore(defaults: defaults)
         preferences.lastSyncDate = Date()
-        let orchestrator = NotificationOrchestrator(scheduler: scheduler,
+        let orchestrator = (scheduler: scheduler,
                                                     center: NotificationCenterStore(defaults: defaults),
                                                     rules: NotificationRulesStore(defaults: defaults),
                                                     preferences: preferences)
@@ -284,7 +284,7 @@ final class NotificationTests: XCTestCase {
         let defaults = UserDefaults(suiteName: "NotificationTests-\(UUID().uuidString)")!
         let preferences = PreferencesStore(defaults: defaults)
         preferences.lastSyncDate = Date().addingTimeInterval(-48 * 3600)
-        let orchestrator = NotificationOrchestrator(scheduler: scheduler,
+        let orchestrator = (scheduler: scheduler,
                                                     center: NotificationCenterStore(defaults: defaults),
                                                     rules: NotificationRulesStore(defaults: defaults),
                                                     preferences: preferences)

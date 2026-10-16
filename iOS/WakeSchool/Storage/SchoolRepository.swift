@@ -72,9 +72,14 @@ final class SwiftDataSchoolRepository: SchoolRepository {
 
         snapshot.timetable.forEach { context.insert(StoredCourse($0)) }
         for homework in snapshot.homework {
+            // Le choix local de l'utilisateur GAGNE toujours : un devoir décoché
+            // localement (« false ») ne doit pas être recoché par PRONOTE
+            // (l'ancien « OR » réactivait systématiquement les devoirs décochés).
+            // La valeur PRONOTE ne sert que s'il n'y a aucun état local connu.
+            let done = localDone[homework.id] ?? homework.isDone
             context.insert(try StoredHomework(
                 homework,
-                isDone: homework.isDone || (localDone[homework.id] ?? false)
+                isDone: done
             ))
         }
         snapshot.grades.forEach { context.insert(StoredGrade($0)) }
