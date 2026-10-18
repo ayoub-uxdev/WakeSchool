@@ -1,6 +1,18 @@
 import Foundation
 import SwiftData
 
+/// Erreurs possibles du cache local scolaire.
+enum SchoolRepositoryError: LocalizedError, Equatable {
+    /// Le devoir que l'on cherche à modifier n'existe plus dans le cache local.
+    case homeworkNotFound
+    public var errorDescription: String? {
+        switch self {
+        case .homeworkNotFound:
+            return "Devoir introuvable dans le cache local."
+        }
+    }
+}
+
 /// Accès au cache local des données scolaires.
 @MainActor
 protocol SchoolRepository {
@@ -63,9 +75,37 @@ final class SwiftDataSchoolRepository: SchoolRepository {
     }
 
     func save(_ snapshot: SchoolSnapshot) throws {
-        var localDone: [UUID: Bool] = [:]
-        for stored in try context.fetch(FetchDescriptor<StoredHomework>()) {
-            localDone[stored.id] = stored.isDone
+        let stored = try context.fetch(FetchDescriptor<StoredHomework>())
+
+        // État local par UUID technique…
+        var localDoneByID: [UUID: Bool] = [:]
+        for item in stored {
+            localDoneByID[item.id] = item.isDone
+        }
+
+        // …et par identité métier stable (matière + jour d'échéance + titre),
+        // qui survit au changement d'identifiant technique PRONOTE (`N`).
+        // Transfert de coche par clé UNIQUEMENT si la clé est sans ambiguïté :
+        // un seul ancien devoir ET un seul nouveau devoir portent cette clé
+        // (jamais de transfert arbitraire entre devoirs simplement semblables).
+        var localDoneByKey: [String: Bool] = [:]
+        var storedKeyCounts: [String: Int] = [:]
+        for item in stored {
+            let key = Self.businessKey(subjectName: item.subjectName,
+                                       dueDate: item.dueDate,
+                                       title: item.title)
+            storedKeyCounts[key, default: 0] += 1
+            localDoneByKey[key] = item.isDone
+        }
+
+        // Deux devoirs entrants partageant la même clé : correspondance non
+        // fiable, aucun transfert de coche pour ces clés.
+        var incomingKeyCounts: [String: Int] = [:]
+        for homework in snapshot.homework {
+            let key = Self.businessKey(subjectName: homework.subject.name,
+                                       dueDate: homework.dueDate,
+                                       title: homework.title)
+            incomingKeyCounts[key, default: 0] += 1
         }
 
         try deleteAll()
@@ -76,7 +116,13 @@ final class SwiftDataSchoolRepository: SchoolRepository {
             // localement (« false ») ne doit pas être recoché par PRONOTE
             // (l'ancien « OR » réactivait systématiquement les devoirs décochés).
             // La valeur PRONOTE ne sert que s'il n'y a aucun état local connu.
-            let done = localDone[homework.id] ?? homework.isDone
+            let key = Self.businessKey(subjectName: homework.subject.name,
+                                       dueDate: homework.dueDate,
+                                       title: homework.title)
+            let localByKey = (incomingKeyCounts[key] == 1 && storedKeyCounts[key] == 1)
+                ? localDoneByKey[key]
+                : nil
+            let done = localDoneByID[homework.id] ?? localByKey ?? homework.isDone
             context.insert(try StoredHomework(
                 homework,
                 isDone: done
@@ -91,7 +137,12 @@ final class SwiftDataSchoolRepository: SchoolRepository {
 
     func setHomework(_ id: UUID, done: Bool) throws {
         let all = try context.fetch(FetchDescriptor<StoredHomework>())
-        guard let target = all.first(where: { $0.id == id }) else { return }
+        // Un devoir introuvable n'est PAS une réussite silencieuse : l'erreur
+        // remonte à l'appelant (sinon l'UI croit avoir enregistré une coche
+        // qui n'existe nulle part).
+        guard let target = all.first(where: { $0.id == id }) else {
+            throw SchoolRepositoryError.homeworkNotFound
+        }
         target.isDone = done
         try context.save()
     }
@@ -100,6 +151,18 @@ final class SwiftDataSchoolRepository: SchoolRepository {
         try deleteAll()
         try context.delete(model: StoredAttendanceEvent.self)
         try context.save()
+    }
+
+    /// Identité métier stable d'un devoir, indépendante de l'identifiant
+    /// technique PRONOTE : même matière, même échéance (au jour), même titre.
+    /// Volontairement prudemment : deux devoirs distincts avec des titres
+    /// différents ne partagent JAMAIS de clé (aucun transfert de coche entre
+    /// devoirs simplement semblables).
+    static func businessKey(subjectName: String, dueDate: Date, title: String) -> String {
+        let normalizedSubject = subjectName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let day = Calendar(identifier: .gregorian).startOfDay(for: dueDate).timeIntervalSince1970
+        return "\(normalizedSubject)|\(day)|\(normalizedTitle)"
     }
 
     private func deleteAll() throws {

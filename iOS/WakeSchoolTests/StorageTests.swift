@@ -280,3 +280,143 @@ private struct FailingProvider: SchoolDataProvider {
     func exams() async throws -> [Exam] { throw PronoteError.notImplemented }
     func events() async throws -> [SchoolEvent] { throw PronoteError.notImplemented }
 }
+
+// MARK: - Persistance des coches de devoirs (LOT 8.2A)
+
+extension StorageTests {
+    private func homework(id: UUID, subject: String = "Mathématiques", due: Date, title: String, done: Bool) -> Homework {
+        Homework(id: id,
+                 subject: Subject(id: UUID(), name: subject),
+                 title: title,
+                 details: "",
+                 dueDate: due,
+                 isDone: done,
+                 priority: .unspecified,
+                 attachments: [])
+    }
+
+    /// Cocher un devoir, recréer le repository, relire : coche conservée.
+    @MainActor
+    func testHomeworkCheckSurvivesRepositoryRecreation() throws {
+        let container = try SwiftDataSchoolRepository.makeContainer(inMemory: true)
+        let id = UUID()
+        let homework = homework(id: id, due: T.date(10, 10), title: "Exercices p.42", done: false)
+        try SwiftDataSchoolRepository(container: container).save(SchoolSnapshot(homework: [homework]))
+        try SwiftDataSchoolRepository(container: container).setHomework(id, done: true)
+
+        let reloaded = try SwiftDataSchoolRepository(container: container).loadSnapshot().homework
+        XCTAssertEqual(reloaded.first?.isDone, true)
+    }
+
+    /// Cocher puis resynchroniser avec le MÊME UUID : coche conservée.
+    @MainActor
+    func testHomeworkCheckSurvivesSyncWithSameUUID() throws {
+        let repository = try makeRepository()
+        let id = UUID()
+        try repository.save(SchoolSnapshot(homework: [homework(id: id, due: T.date(10, 10), title: "Exercices p.42", done: false)]))
+        try repository.setHomework(id, done: true)
+        try repository.save(SchoolSnapshot(homework: [homework(id: id, due: T.date(10, 10), title: "Exercices p.42", done: false)]))
+
+        XCTAssertEqual(try repository.loadSnapshot().homework.first?.isDone, true)
+    }
+
+    /// Cocher puis resynchroniser avec un UUID DIFFÉRENT mais une identité
+    /// métier équivalente (même matière/jour/titre) : coche conservée.
+    @MainActor
+    func testHomeworkCheckSurvivesSyncWithDifferentUUID() throws {
+        let repository = try makeRepository()
+        try repository.save(SchoolSnapshot(homework: [homework(id: UUID(), due: T.date(10, 10), title: "Exercices p.42", done: false)]))
+
+        // L'UUID réel du premier devoir est connu via la relecture.
+        let storedID = try XCTUnwrap(repository.loadSnapshot().homework.first?.id)
+        try repository.setHomework(storedID, done: true)
+
+        // Deuxième synchronisation : identifiant PRONOTE différent, contenu identique.
+        try repository.save(SchoolSnapshot(homework: [homework(id: UUID(), due: T.date(10, 10), title: "Exercices p.42", done: false)]))
+
+        XCTAssertEqual(try repository.loadSnapshot().homework.first?.isDone, true,
+                       "La coche doit survivre à un changement d'identifiant technique PRONOTE.")
+    }
+
+    /// Deux devoirs distincts (titres différents) ne partagent JAMAIS de coche :
+    /// cocher l'un ne coche pas l'autre après resynchronisation.
+    @MainActor
+    func testDistinctHomeworksDoNotShareCheck() throws {
+        let repository = try makeRepository()
+        let first = UUID(), second = UUID()
+        try repository.save(SchoolSnapshot(homework: [
+            homework(id: first, due: T.date(10, 10), title: "Exercices p.42", done: false),
+            homework(id: second, due: T.date(10, 10), title: "Réviser leçon 3", done: false)
+        ]))
+        try repository.setHomework(first, done: true)
+        try repository.save(SchoolSnapshot(homework: [
+            homework(id: second, due: T.date(10, 10), title: "Réviser leçon 3", done: false)
+        ]))
+
+        let reloaded = try repository.loadSnapshot().homework
+        XCTAssertEqual(reloaded.first { $0.title == "Réviser leçon 3" }?.isDone, false,
+                       "Une coche ne doit jamais être transférée à un devoir distinct.")
+    }
+
+    /// Décocher un devoir puis resynchroniser : il reste décoché (le choix
+    /// local gagne sur la valeur PRONOTE, jamais de recoche automatique).
+    @MainActor
+    func testUncheckedHomeworkStaysUncheckedAfterSync() throws {
+        let repository = try makeRepository()
+        let id = UUID()
+        try repository.save(SchoolSnapshot(homework: [homework(id: id, due: T.date(10, 10), title: "Exercices p.42", done: true)]))
+        try repository.setHomework(id, done: false)
+        // PRONOTE affiche le devoir comme "à faire" (done: false) : pas de recoche.
+        try repository.save(SchoolSnapshot(homework: [homework(id: id, due: T.date(10, 10), title: "Exercices p.42", done: false)]))
+
+        XCTAssertEqual(try repository.loadSnapshot().homework.first?.isDone, false)
+    }
+
+    /// setHomework sur un devoir absent échoue explicitement (pas de réussite silencieuse).
+    @MainActor
+    func testSetHomeworkOnMissingHomeworkThrows() throws {
+        let repository = try makeRepository()
+        XCTAssertThrowsError(try repository.setHomework(UUID(), done: true)) { error in
+            XCTAssertEqual(error as? SchoolRepositoryError, .homeworkNotFound)
+        }
+    }
+
+    /// Compatibilité : un devoir coché par une version précédente (isDone en
+    /// base) reste coché après une resynchronisation (état local gagne).
+    @MainActor
+    func testPreviouslyCheckedHomeworkStaysCheckedAcrossSync() throws {
+        let repository = try makeRepository()
+        let id = UUID()
+        try repository.save(SchoolSnapshot(homework: [homework(id: id, due: T.date(10, 10), title: "Exercices p.42", done: false)]))
+        try repository.setHomework(id, done: true)
+        try repository.save(SchoolSnapshot(homework: [homework(id: id, due: T.date(10, 10), title: "Exercices p.42", done: false)]))
+
+        XCTAssertEqual(try repository.loadSnapshot().homework.first?.isDone, true,
+                       "Les coches enregistrées par les versions précédentes restent effectives.")
+    }
+
+    /// Deux ANCIENS devoirs partagent la même clé métier (même matière/jour/
+    /// titre), puis un nouveau devoir arrive avec cette même clé mais un UUID
+    /// différent : AUCUN transfert arbitraire de coche (clé ambiguë).
+    @MainActor
+    func testAmbiguousStoredKeyDoesNotTransferCheck() throws {
+        let repository = try makeRepository()
+        let first = UUID(), second = UUID()
+        let due = T.date(10, 10)
+        // Deux anciens devoirs, clé métier identique, états IDENTIQUES (false).
+        try repository.save(SchoolSnapshot(homework: [
+            homework(id: first, due: due, title: "Exercices p.42", done: false),
+            homework(id: second, due: due, title: "Exercices p.42", done: false)
+        ]))
+        try repository.setHomework(first, done: true)
+        // Nouveau devoir : même clé métier, UUID différent.
+        try repository.save(SchoolSnapshot(homework: [
+            homework(id: UUID(), due: due, title: "Exercices p.42", done: false)
+        ]))
+
+        let reloaded = try repository.loadSnapshot().homework
+        XCTAssertEqual(reloaded.count, 1)
+        XCTAssertEqual(reloaded.first?.isDone, false,
+                       "Une clé métier ambiguë (plusieurs anciens devoirs) ne doit jamais transférer de coche.")
+    }
+}
