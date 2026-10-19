@@ -40,6 +40,16 @@ final class AcademicCalendarViewModel: ObservableObject {
     /// Message d'erreur affiché en cas d'échec de chargement.
     @Published private(set) var errorMessage: String?
 
+    /// Efface le message d'erreur courant (utilisé par la vue au "Réessayer").
+    func clearError() {
+        errorMessage = nil
+    }
+
+    /// Enregistre un message d'erreur (utilisé par la vue en cas d'échec de rafraîchissement).
+    func setError(_ message: String) {
+        errorMessage = message
+    }
+
     /// Toutes les périodes scolaires connues (même non encore récupérées).
     @Published private(set) var periods: [SchoolPeriod] = []
 

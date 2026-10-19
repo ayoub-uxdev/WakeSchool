@@ -18,6 +18,7 @@ final class LivePronoteClient: PronoteClient, PronoteDataDiagnosticsReporting {
     private var schoolDayEndTimes: [[String: Any]] = []
     private var functionOptionsErrorCode: String?
     private(set) var dataDiagnostics = PronoteSyncDiagnostics()
+    private(set) var lastFetchedExams: [Exam] = []
 
     init(
         credentials: PronoteCredentials,
@@ -376,11 +377,12 @@ final class LivePronoteClient: PronoteClient, PronoteDataDiagnosticsReporting {
         do {
             let client = try await connectedClient()
             let resource = try await loadResource(client)
-            let entries = try await fetchTimetableForWeek(weekNumber: weekNumber, resource: resource)
+            let (entries, exams) = try await fetchTimetableForWeek(weekNumber: weekNumber, resource: resource)
             dataDiagnostics.timetable.callStatus = .succeeded
             dataDiagnostics.timetable.rawCount = entries.count
             dataDiagnostics.timetable.convertedCount = entries.count
             dataDiagnostics.schoolPeriodIdentified = !periods.isEmpty && schoolYearStart != nil
+            self.lastFetchedExams = exams
             return entries
         } catch {
             recordDatasetFailure(.timetable, error: error, fallbackStage: "PageEmploiDuTemps(week \(weekNumber))")

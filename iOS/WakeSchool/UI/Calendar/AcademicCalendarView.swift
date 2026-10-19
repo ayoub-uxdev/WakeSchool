@@ -1,7 +1,7 @@
-ï»¿import SwiftUI
+import SwiftUI
 
-/// Calendrier scolaire annuel : navigation mensuelle, sÃ©lection de jour,
-/// chargement progressif des pÃ©riodes PRONOTE et affichage des cours par jour.
+/// Calendrier scolaire annuel : navigation mensuelle, sélection de jour,
+/// chargement progressif des périodes PRONOTE et affichage des cours par jour.
 struct AcademicCalendarView: View {
     @EnvironmentObject private var dataStore: SchoolDataStore
     @StateObject private var viewModel: AcademicCalendarViewModel
@@ -45,7 +45,7 @@ struct AcademicCalendarView: View {
         }
     }
 
-    // MARK: - En-tÃªte
+    // MARK: - En-tête
 
     private var header: some View {
         VStack(spacing: 12) {
@@ -112,7 +112,7 @@ struct AcademicCalendarView: View {
         .padding(.top, 16)
     }
 
-    /// Cours par jour (clÃ© = date au dÃ©but de journÃ©e).
+    /// Cours par jour (clé = date au début de journée).
     private var coursesByDay: [Date: [TimetableEntry]] {
         let calendar = Calendar.current
         let groups = Dictionary(grouping: dataStore.snapshot.timetable) { entry in
@@ -121,7 +121,7 @@ struct AcademicCalendarView: View {
         return groups
     }
 
-    // MARK: - Cours du jour sÃ©lectionnÃ©
+    // MARK: - Cours du jour sélectionné
 
     private var dayCoursesSection: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -141,13 +141,13 @@ struct AcademicCalendarView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    // MARK: - Ã‰tats
+    // MARK: - États
 
     private var loadingSection: some View {
         VStack(spacing: 12) {
             ProgressView()
                 .controlSize(.small)
-            Text("Chargement des coursâ€¦")
+            Text("Chargement des cours…")
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.7))
         }
@@ -164,8 +164,8 @@ struct AcademicCalendarView: View {
                 .foregroundStyle(.white.opacity(0.8))
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
-            Button("RÃ©essayer") {
-                viewModel.errorMessage = nil
+            Button("Réessayer") {
+                viewModel.clearError()
                 viewModel.loadPeriodForDate(viewModel.selectedDate)
             }
             .buttonStyle(.borderedProminent)
@@ -182,7 +182,7 @@ struct AcademicCalendarView: View {
             Text("Aucun cours ce jour")
                 .font(.headline)
                 .foregroundStyle(.white.opacity(0.8))
-            Text("SÃ©lectionnez un autre jour ou tirez vers le bas pour synchroniser.")
+            Text("Sélectionnez un autre jour ou tirez vers le bas pour synchroniser.")
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.5))
                 .multilineTextAlignment(.center)
@@ -197,8 +197,9 @@ struct AcademicCalendarView: View {
         do {
             try viewModel.refreshPeriods()
         } catch {
-            viewModel.errorMessage = error.localizedDescription
+            viewModel.setError(error.localizedDescription)
         }
         viewModel.loadPeriodForDate(viewModel.selectedDate)
     }
 }
+
