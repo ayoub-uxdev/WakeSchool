@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import WidgetKit
 
 /// État partagé par les écrans.
 /// Charge le cache local, déclenche la synchronisation et relaie les actions utilisateur
@@ -11,6 +12,14 @@ final class SchoolDataStore: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var lastSync: Date?
     @Published private(set) var syncDiagnostics: PronoteSyncDiagnostics?
+
+    /// Demande d'ouverture de l'emploi du temps depuis le widget (deep link `wakeschool://widget/next-lesson`).
+    @Published private(set) var widgetOpenTimetable = false
+
+    /// Appelé par le point d'entrée de l'app lorsque le widget est touché.
+    func requestOpenTimetableFromWidget() {
+        widgetOpenTimetable = true
+    }
 
     // Absences et retards : état et erreur INDÉPENDANTS du cache scolaire.
     @Published private(set) var attendance: [AttendanceEvent] = []
@@ -38,6 +47,16 @@ final class SchoolDataStore: ObservableObject {
 
     var dataSource: DataSourceKind {
         environment.preferences.dataSource
+    }
+
+    /// Service de synchronisation exposé aux écrans (évite de rendre `environment` public).
+    var syncService: SchoolSyncService {
+        environment.sync
+    }
+
+    /// Dépôt local exposé aux écrans (évite de rendre `environment` public).
+    var repository: SchoolRepository {
+        environment.repository
     }
 
     // MARK: - Apparence
@@ -131,6 +150,69 @@ final class SchoolDataStore: ObservableObject {
 
         // Les absences/retards se synchronisent indépendamment du cache scolaire.
         await refreshAttendance()
+
+        // Met à jour l'instantané du widget iOS (App Group) et recharge la timeline.
+        await updateWidgetSnapshot()
+    }
+
+    // MARK: - Widget iOS (App Group)
+
+    /// Identifiant du groupe d'applications partagé avec l'extension Widget.
+    private let widgetGroupIdentifier = "group.com.ayoub.wakeschool"
+
+    /// Clés de l'instantané partagé avec le widget (contrat explicite avec WakeSchoolWidget).
+    private let widgetHasEverSyncedKey = "widget_has_ever_synced"
+    private let widgetCoursesJsonKey = "widget_courses_json"
+
+    /// Nombre maximal de cours futurs partagés avec le widget (liste légère, sans données sensibles).
+    private let widgetMaxFutureCourses = 5
+
+    /// Écrit les prochains cours non annulés dans les UserDefaults partagés
+    /// du App Group, puis demande à WidgetKit de recharger ses timelines.
+    ///
+    /// Une liste limitée (au lieu d'un seul cours) permet au widget de sélectionner
+    /// lui-même le prochain cours à l'heure système actuelle, même si WakeSchool
+    /// n'a pas été rouvert entre-temps.
+    private func updateWidgetSnapshot() async {
+        let now = Date()
+        let timetable = snapshot.timetable
+        let futureCourses = ScheduleService.active(timetable)
+            .filter { $0.start > now }
+            .prefix(widgetMaxFutureCourses)
+
+        let courses = futureCourses.map { entry in
+            WidgetCourse(
+                subjectName: entry.subject.name,
+                teacherName: entry.teacher?.name,
+                room: entry.room,
+                startDate: entry.start,
+                endDate: entry.end,
+                isCancelled: entry.isCancelled
+            )
+        }
+
+        let defaults = UserDefaults(suiteName: widgetGroupIdentifier)
+        guard let defaults else { return }
+
+        defaults.set(true, forKey: widgetHasEverSyncedKey)
+
+        if let data = try? JSONEncoder().encode(courses) {
+            defaults.set(data, forKey: widgetCoursesJsonKey)
+        } else {
+            defaults.removeObject(forKey: widgetCoursesJsonKey)
+        }
+
+        WidgetCenter.shared.reloadTimelines(ofKind: "WakeSchoolWidget")
+    }
+
+    /// Supprime l'instantané du widget (aucun cours à afficher).
+    /// Conserve `widget_has_ever_synced` à true car une synchronisation a eu lieu.
+    private func clearWidgetSnapshot() {
+        let defaults = UserDefaults(suiteName: widgetGroupIdentifier)
+        guard let defaults else { return }
+
+        defaults.removeObject(forKey: widgetCoursesJsonKey)
+        WidgetCenter.shared.reloadTimelines(ofKind: "WakeSchoolWidget")
     }
 
     // MARK: - Détection des nouveautés et notifications (LOT 8)
@@ -239,9 +321,24 @@ final class SchoolDataStore: ObservableObject {
 
     /// Recalcule le plan AutoWake et met à jour l'alarme automatique à partir
     /// des données DÉJÀ synchronisées (aucun appel réseau PRONOTE).
+    ///
+    /// Une erreur de lecture de `loadPeriods()` (dépôt indisponible) se traduit
+    /// par `periods = nil` (données indisponibles) et non par `[]` (absence de
+    /// périodes). Ainsi, une erreur ne peut jamais être confondue avec de
+    /// vraies vacances : l'alarme valide est conservée (comportement de
+    /// sécurité).
     func recalculateAutoWake() async {
+        let periods: [SchoolPeriod]?
+        do {
+            periods = try environment.repository.loadPeriods()
+        } catch {
+            periods = nil
+            errorMessage = "Les périodes scolaires sont temporairement indisponibles. Le réveil automatique est conservé."
+        }
         await environment.notifications.processAfterSync(
             entries: snapshot.timetable,
+            periods: periods,
+            isDemoMode: dataSource == .demo,
             snapshot: snapshot,
             knownGradeIDs: environment.preferences.knownGradeIDs,
             knownExamIDs: environment.preferences.knownExamIDs,

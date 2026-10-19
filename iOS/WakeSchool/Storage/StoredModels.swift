@@ -1,8 +1,8 @@
-import Foundation
+﻿import Foundation
 import SwiftData
 
-// Modèles SwiftData : de simples « lignes » de persistance.
-// Les structs de `Models/` restent la représentation utilisée partout ailleurs.
+// ModÃ¨les SwiftData : de simples Â« lignes Â» de persistance.
+// Les structs de `Models/` restent la reprÃ©sentation utilisÃ©e partout ailleurs.
 
 @Model
 final class StoredCourse {
@@ -46,6 +46,19 @@ final class StoredCourse {
                               isCancelled: isCancelled,
                               isModified: isModified,
                               changeNote: changeNote)
+    }
+}
+
+@Model
+final class StoredCoursePeriodLink {
+    @Attribute(.unique) var id: UUID
+    var courseID: UUID
+    var periodID: String
+
+    init(courseID: UUID, periodID: String) {
+        self.id = UUID()
+        self.courseID = courseID
+        self.periodID = periodID
     }
 }
 
@@ -100,10 +113,10 @@ final class StoredGrade {
     var outOf: Double
     var coefficient: Double
     var date: Date
-    /// Statut non numérique de la note (« ABS », « Disp », « NA »).
-    /// nil = note numérique (`value` fait foi). Ajout LOT 8 : les anciennes
-    /// lignes créées avant cet attribut ont une valeur nil lue par SwiftData,
-    /// ce qui correspond bien à une note numérique.
+    /// Statut non numÃ©rique de la note (Â« ABS Â», Â« Disp Â», Â« NA Â»).
+    /// nil = note numÃ©rique (`value` fait foi). Ajout LOT 8 : les anciennes
+    /// lignes crÃ©Ã©es avant cet attribut ont une valeur nil lue par SwiftData,
+    /// ce qui correspond bien Ã  une note numÃ©rique.
     var statusRaw: String?
 
     init(_ grade: Grade) {
@@ -217,6 +230,33 @@ final class StoredEvent {
 }
 
 @Model
+final class StoredSchoolPeriod {
+    @Attribute(.unique) var id: String
+    var title: String
+    var startDate: Date
+    var endDate: Date
+    var isTimetableComplete: Bool
+
+    init(_ period: SchoolPeriod) {
+        id = period.id
+        title = period.title
+        startDate = period.startDate
+        endDate = period.endDate
+        isTimetableComplete = period.isTimetableComplete
+    }
+
+    var period: SchoolPeriod {
+        SchoolPeriod(
+            id: id,
+            title: title,
+            startDate: startDate,
+            endDate: endDate,
+            isTimetableComplete: isTimetableComplete
+        )
+    }
+}
+
+@Model
 final class StoredAttendanceEvent {
     @Attribute(.unique) var id: UUID
     var kindRaw: String
@@ -233,7 +273,7 @@ final class StoredAttendanceEvent {
         kindRaw = event.kind.rawValue
         start = event.start
         end = event.end
-        // 0 = durée inconnue (le champ du modèle est non optionnel).
+        // 0 = durÃ©e inconnue (le champ du modÃ¨le est non optionnel).
         durationMinutes = event.durationMinutes ?? 0
         isJustified = event.isJustified
         justification = event.justification
@@ -255,3 +295,5 @@ final class StoredAttendanceEvent {
         )
     }
 }
+
+

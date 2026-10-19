@@ -12,7 +12,9 @@ final class LivePronoteClient: PronoteClient, PronoteDataDiagnosticsReporting {
     private var resource: [String: Any]?
     private var hasLoadedUserParameters = false
     private var periods: [[String: Any]] = []
-    private var schoolYearStart: Date?
+    /// Lundi de référence de l'année scolaire PRONOTE, chargé après la première connexion.
+    /// Accessible pour convertir des plages de dates en numéros de semaine PRONOTE.
+    var schoolYearStart: Date?
     private var schoolDayEndTimes: [[String: Any]] = []
     private var functionOptionsErrorCode: String?
     private(set) var dataDiagnostics = PronoteSyncDiagnostics()
@@ -205,6 +207,33 @@ final class LivePronoteClient: PronoteClient, PronoteDataDiagnosticsReporting {
 
     // MARK: - Timetable
 
+    /// Récupère l'emploi du temps et les contrôles pour UNE SEULE semaine PRONOTE.
+    /// Méthode privée utilisée en interne par `getTimetable(weekNumber:)` et
+    /// `fetchTimetableAndExams()`.
+    private func fetchTimetableForWeek(
+        weekNumber: Int,
+        resource: [String: Any]
+    ) async throws -> (entries: [TimetableEntry], exams: [Exam]) {
+        let client = try await connectedClient()
+
+        let response = try await client.timetable(
+            weekNumber: weekNumber,
+            resource: resource
+        )
+
+        let rawCount = PronoteMapper.rawTimetableCount(from: response)
+        let weekEntries = PronoteMapper.timetable(
+            from: response,
+            schoolDayEndTimes: schoolDayEndTimes
+        )
+        let weekExams = PronoteMapper.exams(from: response)
+
+        dataDiagnostics.timetable.rawCount = rawCount
+        dataDiagnostics.timetable.convertedCount = weekEntries.count
+
+        return (weekEntries, weekExams)
+    }
+
     private func fetchTimetableAndExams() async throws -> ([TimetableEntry], [Exam]) {
         let client = try await connectedClient()
 
@@ -249,19 +278,13 @@ final class LivePronoteClient: PronoteClient, PronoteDataDiagnosticsReporting {
         var exams: [Exam] = []
 
         for week in currentWeek...(currentWeek + 2) {
-
-            let response = try await client.timetable(
-                    weekNumber: week,
-                    resource: resource
-                )
-            rawCount += PronoteMapper.rawTimetableCount(from: response)
-            entries.append(contentsOf: PronoteMapper.timetable(
-                from: response,
-                schoolDayEndTimes: schoolDayEndTimes
-            ))
-            exams.append(contentsOf: PronoteMapper.exams(from: response))
-                dataDiagnostics.timetable.rawCount = rawCount
-                dataDiagnostics.timetable.convertedCount = deduplicate(entries).count
+            let (weekEntries, weekExams) = try await fetchTimetableForWeek(
+                weekNumber: week,
+                resource: resource
+            )
+            rawCount += PronoteMapper.rawTimetableCount(from: [:]) // rawCount already tracked in fetchTimetableForWeek
+            entries.append(contentsOf: weekEntries)
+            exams.append(contentsOf: weekExams)
         }
 
         let result = deduplicate(entries)
@@ -273,6 +296,63 @@ final class LivePronoteClient: PronoteClient, PronoteDataDiagnosticsReporting {
         return (result, deduplicatedExams)
     }
 
+    /// Numéros de semaine PRONOTE qui couvrent la plage de dates donnée.
+    /// Nécessite que `schoolYearStart` ait été chargé.
+    /// Retourne un tableau vide si l'ancre de l'année scolaire est indisponible.
+    func weekNumbersCovering(_ range: ClosedRange<Date>) -> [Int] {
+        guard let start = schoolYearStart else { return [] }
+        let calendar = Calendar.current
+
+        let firstDay = calendar.startOfDay(for: range.lowerBound)
+        let lastDay = calendar.startOfDay(for: range.upperBound)
+
+        let firstWeek = schoolWeek(for: firstDay, anchor: start)
+        let lastWeek = schoolWeek(for: lastDay, anchor: start)
+
+        return Array(firstWeek...lastWeek)
+    }
+
+    /// Emploi du temps pour la plage de dates donnée, récupéré semaine par semaine
+    /// depuis PRONOTE sans télécharger l'année entière.
+    /// Établit la connexion si nécessaire (rendant `schoolYearStart` disponible).
+    func getTimetable(in range: ClosedRange<Date>) async throws -> [TimetableEntry] {
+        dataDiagnostics.timetable = PronoteDatasetDiagnostics(callStatus: .failed)
+        do {
+            let client = try await connectedClient()
+            let resource = try await loadResource(client)
+
+            let weeks = weekNumbersCovering(range)
+            guard !weeks.isEmpty else {
+                dataDiagnostics.timetable.callStatus = .succeeded
+                dataDiagnostics.timetable.convertedCount = 0
+                return []
+            }
+
+            var allEntries: [TimetableEntry] = []
+            for week in weeks {
+                let (weekEntries, _) = try await fetchTimetableForWeek(
+                    weekNumber: week,
+                    resource: resource
+                )
+                allEntries.append(contentsOf: weekEntries)
+            }
+
+            // Déduplication par ID (évite les doublons sur semaines chevauchantes)
+            var seen = Set<UUID>()
+            let result = allEntries.filter { seen.insert($0.id).inserted }
+                .sorted { $0.start < $1.start }
+
+            dataDiagnostics.timetable.callStatus = .succeeded
+            dataDiagnostics.timetable.rawCount = allEntries.count
+            dataDiagnostics.timetable.convertedCount = result.count
+            dataDiagnostics.schoolPeriodIdentified = !periods.isEmpty && schoolYearStart != nil
+            return result
+        } catch {
+            recordDatasetFailure(.timetable, error: error, fallbackStage: "PageEmploiDuTemps(range)")
+            throw error
+        }
+    }
+
     // MARK: - Timetable
 
     func getTimetable() async throws -> [TimetableEntry] {
@@ -281,6 +361,29 @@ final class LivePronoteClient: PronoteClient, PronoteDataDiagnosticsReporting {
             return try await fetchTimetableAndExams().0
         } catch {
             recordDatasetFailure(.timetable, error: error, fallbackStage: "PageEmploiDuTemps")
+            throw error
+        }
+    }
+
+    /// Emploi du temps pour une semaine PRONOTE donnée (numéro de semaine dans
+    /// l'année scolaire). Permet le chargement progressif sans télécharger
+    /// toute l'année d'un coup.
+    ///
+    /// - Requiert qu'une connexion ait été établie au préalable (pour disposer
+    ///   de `schoolYearStart` et de la ressource élève).
+    func getTimetable(weekNumber: Int) async throws -> [TimetableEntry] {
+        dataDiagnostics.timetable = PronoteDatasetDiagnostics(callStatus: .failed)
+        do {
+            let client = try await connectedClient()
+            let resource = try await loadResource(client)
+            let entries = try await fetchTimetableForWeek(weekNumber: weekNumber, resource: resource)
+            dataDiagnostics.timetable.callStatus = .succeeded
+            dataDiagnostics.timetable.rawCount = entries.count
+            dataDiagnostics.timetable.convertedCount = entries.count
+            dataDiagnostics.schoolPeriodIdentified = !periods.isEmpty && schoolYearStart != nil
+            return entries
+        } catch {
+            recordDatasetFailure(.timetable, error: error, fallbackStage: "PageEmploiDuTemps(week \(weekNumber))")
             throw error
         }
     }

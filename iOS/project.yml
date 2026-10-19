@@ -18,6 +18,10 @@ targets:
         UILaunchScreen: {}
         NSCameraUsageDescription: "WakeSchool utilise la caméra pour scanner le QR code de connexion PRONOTE."
         NSAlarmKitUsageDescription: "WakeSchool programme ton réveil en fonction de ton emploi du temps."
+        CFBundleURLTypes:
+          - CFBundleURLName: com.ayoub.wakeschool
+            CFBundleURLSchemes:
+              - wakeschool
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ayoub.wakeschool
@@ -31,6 +35,24 @@ targets:
     scheme:
       testTargets:
         - WakeSchoolTests
+    entitlements: WakeSchool/WakeSchool.entitlements
+    dependencies:
+      - target: WakeSchoolWidget
+  WakeSchoolWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: WakeSchoolWidget
+      - path: WakeSchool/Models/WidgetSharedModels.swift
+    info:
+      path: WakeSchoolWidget/Info.plist
+    entitlements: WakeSchoolWidget/WakeSchoolWidget.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ayoub.wakeschool.widget
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
   WakeSchoolTests:
     type: bundle.unit-test
     platform: iOS

@@ -52,6 +52,51 @@ final class SchoolSyncService {
         return events
     }
 
+    /// Synchronise l'emploi du temps pour une période scolaire donnée, sans
+    /// toucher aux autres périodes ni aux devoirs/notes déjà en cache.
+    /// En cas d'échec réseau, les données précédemment enregistrées sont préservées.
+    @discardableResult
+    func syncTimetable(for period: SchoolPeriod) async throws -> [TimetableEntry] {
+        let diagnosticProvider = provider as? SchoolSyncDiagnosticsReporting
+        diagnosticProvider?.resetDataDiagnostics()
+
+        let entries: [TimetableEntry]
+        do {
+            entries = try await provider.timetable(in: period.startDate...period.endDate)
+        } catch {
+            var result = diagnosticProvider?.dataDiagnostics
+            if result?.errorStage == nil {
+                result?.recordFailure(error, stage: "SchoolDataProvider.timetable(in:)")
+            }
+            diagnostics = result
+            throw error
+        }
+
+        do {
+            try repository.saveTimetable(entries, for: period)
+        } catch {
+            var result = diagnosticProvider?.dataDiagnostics
+            result?.recordFailure(error, stage: "SwiftData.saveTimetable")
+            diagnostics = result
+            throw error
+        }
+
+        let saved: SchoolSnapshot
+        do {
+            saved = try repository.loadSnapshot()
+        } catch {
+            var result = diagnosticProvider?.dataDiagnostics
+            result?.recordFailure(error, stage: "SwiftData.loadSnapshot")
+            diagnostics = result
+            throw error
+        }
+
+        var result = diagnosticProvider?.dataDiagnostics
+        result?.recordPersistedSnapshot(saved)
+        diagnostics = result
+        return entries
+    }
+
     /// Récupère les données, les persiste, puis renvoie l'état local à jour.
     @discardableResult
     func sync() async throws -> SchoolSnapshot {

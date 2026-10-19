@@ -375,9 +375,12 @@ struct DashboardView: View {
 
     @ViewBuilder
     private func examsSection(_ summary: DashboardSummary) -> some View {
-        if !summary.upcomingExams.isEmpty {
-            VStack(alignment: .leading, spacing: 12) {
-                WakeSectionHeader(title: "Contrôles à venir", actionTitle: "Notes") { onNavigate(.grades) }
+        VStack(alignment: .leading, spacing: 12) {
+            WakeSectionHeader(title: "Contrôles à venir", actionTitle: "Notes") { onNavigate(.grades) }
+            if summary.upcomingExams.isEmpty {
+                EmptyStateCard(symbol: "checklist", title: "Aucun contrôle à venir",
+                               message: "Les prochains DS apparaîtront ici après synchronisation.")
+            } else {
                 let exams = Array(summary.upcomingExams.prefix(3))
                 VStack(spacing: 14) {
                     ForEach(exams) { exam in

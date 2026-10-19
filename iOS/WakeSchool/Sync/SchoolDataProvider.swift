@@ -4,6 +4,11 @@ import Foundation
 /// (démo, Pronote, ou autre). Brancher une nouvelle source = écrire un nouveau provider.
 protocol SchoolDataProvider {
     func timetable() async throws -> [TimetableEntry]
+    /// Emploi du temps pour la plage de dates donnée.
+    /// Implémentation par défaut : filtre le résultat de `timetable()` par plage de dates.
+    /// Les providers capables de cibler une période (ex. Pronote par semaine) surchargent
+    /// cette méthode pour éviter de télécharger inutilement toute l'année.
+    func timetable(in range: ClosedRange<Date>) async throws -> [TimetableEntry]
     func homework() async throws -> [Homework]
     func grades() async throws -> [Grade]
     func averages() async throws -> [SubjectAverage]
@@ -41,5 +46,15 @@ extension SchoolDataProvider {
                        averages: try await averages(),
                        exams: try await exams(),
                        events: try await events())
+    }
+
+    /// Implémentation par défaut : filtre le résultat de `timetable()` par plage de dates.
+    /// Les providers capables de cibler une période surchargent pour éviter de
+    /// télécharger inutilement des données hors plage.
+    func timetable(in range: ClosedRange<Date>) async throws -> [TimetableEntry] {
+        let all = try await timetable()
+        return all.filter { entry in
+            (range.lowerBound...range.upperBound).contains(entry.start)
+        }
     }
 }

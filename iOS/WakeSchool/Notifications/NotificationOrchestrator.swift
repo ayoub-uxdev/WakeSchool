@@ -81,6 +81,8 @@ final class NotificationOrchestrator: ObservableObject {
     /// Recalcule le plan AutoWake, met à jour les notifications, détecte
     /// les nouveautés. `knownGradeIDs`/`knownExamIDs` : état connu avant sync.
     func processAfterSync(entries: [TimetableEntry],
+                          periods: [SchoolPeriod]?,
+                          isDemoMode: Bool = false,
                           snapshot: SchoolSnapshot,
                           knownGradeIDs: Set<UUID>,
                           knownExamIDs: Set<UUID>,
@@ -91,11 +93,14 @@ final class NotificationOrchestrator: ObservableObject {
 
         // 1. Plan AutoWake à partir de l'emploi du temps réel.
         let customMinutes = preferences.customWakeMinutes
-        let plan = AutoWakeService.plan(entries: entries,
-                                        now: current,
-                                        settings: settings,
-                                        customWakeMinutesFromMidnight: customMinutes,
-                                        calendar: calendar)
+        let planResult = AutoWakeService.plan(entries: entries,
+                                              periods: periods,
+                                              now: current,
+                                              settings: settings,
+                                              isDemoMode: isDemoMode,
+                                              customWakeMinutesFromMidnight: customMinutes,
+                                              calendar: calendar)
+        let plan = planResult.plan
         center.addIfNew(kind: .wakeProposed,
                         title: "Réveil proposé",
                         message: plan.map { "\(DateLabels.dayTitle($0.targetDay)) à \(DateLabels.time($0.recommendation.wakeTime))" } ?? "Aucun cours à venir.")
@@ -123,26 +128,36 @@ final class NotificationOrchestrator: ObservableObject {
         //   → annule l'alarme obsolète ;
         // - une alarme manuelle n'est JAMAIS annulée ici.
         if let autoWakeLifecycle {
-            _ = autoWakeLifecycle.reconcile(plan: wakeAlarmEnabled ? plan : nil)
-            if wakeAlarmEnabled, let plan, plan.recommendation.wakeTime > current,
-               AutoWakeService.shouldReschedule(existingFireDate: autoWakeLifecycle.current?.fireDate,
-                                                desiredFireDate: plan.recommendation.wakeTime) {
-                if await autoWakeLifecycle.schedule(plan: plan) != nil {
-                    center.addIfNew(kind: .wakeConfirmed,
-                                    title: "Réveil programmé",
-                                    message: "\(DateLabels.dayTitle(plan.targetDay)) à \(DateLabels.time(plan.recommendation.wakeTime))" + (plan.isCustom ? " (personnalisé)" : ""))
-                } else {
-                    // AlarmKit indisponible : fallback honnête — une notification
-                    // locale (moins fiable) à la même heure, clairement signalée.
-                    if let notification = WakeConfirmationService.notification(plan: plan, now: current, calendar: calendar) {
-                        try? await scheduler.schedule(notification, at: plan.recommendation.wakeTime)
+            switch planResult {
+            case .planned(let plan):
+                if wakeAlarmEnabled, plan.recommendation.wakeTime > current,
+                   AutoWakeService.shouldReschedule(existingFireDate: autoWakeLifecycle.current?.fireDate,
+                                                    desiredFireDate: plan.recommendation.wakeTime) {
+                    if await autoWakeLifecycle.schedule(plan: plan) != nil {
+                        center.addIfNew(kind: .wakeConfirmed,
+                                        title: "Reveil programme",
+                                        message: "\(DateLabels.dayTitle(plan.targetDay)) a \(DateLabels.time(plan.recommendation.wakeTime))" + (plan.isCustom ? " (personnalise)" : ""))
+                    } else {
+                        // AlarmKit indisponible : fallback honnete - une notification
+                        // locale (moins fiable) a la meme heure, clairement signalee.
+                        if let notification = WakeConfirmationService.notification(plan: plan, now: current, calendar: calendar) {
+                            try? await scheduler.schedule(notification, at: plan.recommendation.wakeTime)
+                        }
+                        lastIssue = "Alarme systeme indisponible : une notification locale (moins fiable) a ete prevue a la place."
                     }
-                    lastIssue = "Alarme système indisponible : une notification locale (moins fiable) a été prévue à la place."
+                }
+            case .holidaysConfirmed:
+                if wakeAlarmEnabled {
+                    _ = autoWakeLifecycle.reconcile(plan: nil)
+                }
+            case .insufficientData:
+                // Ne pas annuler aveuglement une alarme valide.
+                // Si l'alarme existante est deja depassee, l'annuler.
+                if wakeAlarmEnabled, let alarm = autoWakeLifecycle.current, alarm.fireDate <= current {
+                    autoWakeLifecycle.cancel()
                 }
             }
-        }
-
-        // 4. Notifications système planifiées.
+        }// 4. Notifications système planifiées.
         await scheduleSystem(plan: plan, changes: changes, homework: snapshot.homework,
                              wakeAlarmEnabled: wakeAlarmEnabled,
                              wakeConfirmation: wakeConfirmation)

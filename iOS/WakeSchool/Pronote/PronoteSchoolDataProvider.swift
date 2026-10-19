@@ -139,6 +139,17 @@ struct PronoteSchoolDataProvider: SchoolDataProvider, SchoolSyncDiagnosticsRepor
         try await client.getTimetable()
     }
 
+    /// Emploi du temps pour la plage de dates donnée.
+    /// Lorsque le client est un `LivePronoteClient`, récupère uniquement les
+    /// semaines PRONOTE couvrant la plage (pas de téléchargement de l'année entière).
+    /// Sinon, utilise l'implémentation par défaut (filtre sur `timetable()`).
+    func timetable(in range: ClosedRange<Date>) async throws -> [TimetableEntry] {
+        guard let liveClient = client as? LivePronoteClient else {
+            return try await timetable().filter { range.contains($0.start) }
+        }
+        return try await liveClient.getTimetable(in: range)
+    }
+
     /// Synchronisation en UNE SEULE récupération emploi du temps :
     /// `client.getTimetableAndExams()` dérive les DS des MÊMES réponses réseau
     /// que les cours (pas de 2ᵉ boucle PageEmploiDuTemps). Les notes sont aussi
