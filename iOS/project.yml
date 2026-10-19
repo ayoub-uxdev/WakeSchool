@@ -35,7 +35,8 @@ targets:
     scheme:
       testTargets:
         - WakeSchoolTests
-    entitlements: WakeSchool/WakeSchool.entitlements
+    entitlements:
+      path: WakeSchool/WakeSchool.entitlements
     dependencies:
       - target: WakeSchoolWidget
   WakeSchoolWidget:
@@ -46,7 +47,8 @@ targets:
       - path: WakeSchool/Models/WidgetSharedModels.swift
     info:
       path: WakeSchoolWidget/Info.plist
-    entitlements: WakeSchoolWidget/WakeSchoolWidget.entitlements
+    entitlements:
+      path: WakeSchoolWidget/WakeSchoolWidget.entitlements
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ayoub.wakeschool.widget
