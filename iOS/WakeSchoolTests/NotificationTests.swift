@@ -261,6 +261,7 @@ final class NotificationTests: XCTestCase {
             start: date(17, 8, 0), end: date(17, 9, 0))]
 
         await orchestrator.processAfterSync(entries: entries,
+                                            periods: nil,
                                             snapshot: SchoolSnapshot(timetable: entries),
                                             knownGradeIDs: [], knownExamIDs: [],
                                             wakeAlarmEnabled: false,
@@ -270,6 +271,7 @@ final class NotificationTests: XCTestCase {
         XCTAssertTrue(confirmation.id.hasPrefix("wake.confirm."))
         // Re-process immédiat (nouvelle sync) : même identifiant → remplacement, pas de doublon.
         await orchestrator.processAfterSync(entries: entries,
+                                            periods: nil,
                                             snapshot: SchoolSnapshot(timetable: entries),
                                             knownGradeIDs: [], knownExamIDs: [],
                                             wakeAlarmEnabled: false,
@@ -288,10 +290,11 @@ final class NotificationTests: XCTestCase {
                                                     center: NotificationCenterStore(defaults: defaults),
                                                     rules: NotificationRulesStore(defaults: defaults),
                                                     preferences: preferences)
-        let entries: [TimetableEntry] = [TimetableEntry(
+        let entries: [TimetableEntry] = [
             id: UUID(), subject: Subject(id: UUID(), name: "Maths"), teacher: nil, room: nil,
             start: date(17, 8, 0), end: date(17, 9, 0))]
         await orchestrator.processAfterSync(entries: entries,
+                                            periods: nil,
                                             snapshot: SchoolSnapshot(timetable: entries),
                                             knownGradeIDs: [], knownExamIDs: [],
                                             wakeAlarmEnabled: false,

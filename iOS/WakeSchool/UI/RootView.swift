@@ -25,7 +25,7 @@ struct RootView: View {
         .onChange(of: dataStore.widgetOpenTimetable) { _, newValue in
             if newValue {
                 selectedTab = 1
-                dataStore.widgetOpenTimetable = false
+                dataStore.acknowledgeWidgetOpenTimetableRequest()
             }
         }
     }

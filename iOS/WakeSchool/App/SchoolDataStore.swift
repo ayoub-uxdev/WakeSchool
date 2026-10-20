@@ -21,6 +21,13 @@ final class SchoolDataStore: ObservableObject {
         widgetOpenTimetable = true
     }
 
+    /// Acquitte la demande de navigation depuis le widget : réinitialise le
+    /// drapeau après consommation par l'UI (RootView). Le setter reste privé
+    /// pour éviter toute modification externe non maîtrisée.
+    func acknowledgeWidgetOpenTimetableRequest() {
+        widgetOpenTimetable = false
+    }
+
     // Absences et retards : état et erreur INDÉPENDANTS du cache scolaire.
     @Published private(set) var attendance: [AttendanceEvent] = []
     @Published private(set) var isSyncingAttendance = false
@@ -260,8 +267,17 @@ final class SchoolDataStore: ObservableObject {
             }
         }
 
+        let periods: [SchoolPeriod]?
+        do {
+            periods = try environment.repository.loadPeriods()
+        } catch {
+            periods = nil
+            errorMessage = "Les périodes scolaires sont temporairement indisponibles. Le réveil automatique est conservé."
+        }
+
         await environment.notifications.processAfterSync(
             entries: snapshot.timetable,
+            periods: periods,
             snapshot: snapshot,
             knownGradeIDs: knownGrades,
             knownExamIDs: knownExams,
