@@ -291,8 +291,10 @@ final class NotificationTests: XCTestCase {
                                                     rules: NotificationRulesStore(defaults: defaults),
                                                     preferences: preferences)
         let entries: [TimetableEntry] = [
-            id: UUID(), subject: Subject(id: UUID(), name: "Maths"), teacher: nil, room: nil,
-            start: date(17, 8, 0), end: date(17, 9, 0))]
+            TimetableEntry(
+                id: UUID(), subject: Subject(id: UUID(), name: "Maths"), teacher: nil, room: nil,
+                start: date(17, 8, 0), end: date(17, 9, 0))
+        ]
         await orchestrator.processAfterSync(entries: entries,
                                             periods: nil,
                                             snapshot: SchoolSnapshot(timetable: entries),
