@@ -267,9 +267,9 @@ enum PronoteMapper {
         return result.sorted { $0.start < $1.start }
     }
 
-    static func homework(from response: Any) -> [Homework] {
+    static func homework(from response: Any, accountScope: String? = nil) -> [Homework] {
         if let items = protocolItems(from: response, keys: ["ListeTravauxAFaire"]) {
-            return items.compactMap(protocolHomework).sorted { $0.dueDate < $1.dueDate }
+            return items.compactMap { protocolHomework(from: $0, accountScope: accountScope) }.sorted { $0.dueDate < $1.dueDate }
         }
 
         let root = PronoteJSON.unwrap(response)
@@ -293,8 +293,18 @@ enum PronoteMapper {
             let details = HomeworkDescriptionFormatter.plainText(from: rawDetails)
             let done = PronoteJSON.bool(findValue(in: item, keys: ["fait", "estFait", "done"])) ?? false
             let priority = HomeworkPriority.unspecified
-            let rawID = extractID(item) ?? "\(subjectName)|\(title)|\(due.timeIntervalSince1970)|\(details)"
-            let id = stableID(prefix: "homework", value: rawID)
+            
+            // Extraire l'identifiant natif PRONOTE si présent
+            let pronoteID = extractID(item)
+            
+            // Générer un UUID stable cohérent avec le chemin protocole
+            let id = makeStableHomeworkID(
+                pronoteID: pronoteID,
+                subjectID: subject.id,
+                dueDate: due,
+                title: title,
+                accountScope: accountScope
+            )
             guard seen.insert(id).inserted else { continue }
             result.append(Homework(
                 id: id,
@@ -304,7 +314,8 @@ enum PronoteMapper {
                 dueDate: due,
                 isDone: done,
                 priority: priority,
-                attachments: protocolAttachments(from: item)
+                attachments: protocolAttachments(from: item),
+                pronoteID: pronoteID
             ))
         }
         return result.sorted { $0.dueDate < $1.dueDate }
@@ -616,7 +627,8 @@ enum PronoteMapper {
     }
 
     private static func protocolHomework(
-        from item: [String: Any]
+        from item: [String: Any],
+        accountScope: String? = nil
     ) -> Homework? {
         guard let due = PronoteJSON.date(item["PourLe"]),
               let subjectValue = (item["Matiere"] as? [String: Any])?["V"] ?? item["Matiere"] else {
@@ -629,17 +641,77 @@ enum PronoteMapper {
         )
         let details = PronoteJSON.string(item["descriptif"]) ?? ""
         let title = PronoteJSON.string(item["titre"]) ?? subjectName
-        let rawID = extractID(item) ?? "\(subjectName)|\(title)|\(due.timeIntervalSince1970)|\(details)"
+        
+        // Extraire l'identifiant natif PRONOTE (champ "N")
+        let pronoteID = extractID(item)
+        
+        // Générer un UUID stable : basé sur pronoteID si dispo, sinon clé métier stable
+        let id = makeStableHomeworkID(
+            pronoteID: pronoteID,
+            subjectID: subject.id,
+            dueDate: due,
+            title: title,
+            accountScope: accountScope
+        )
+        
         return Homework(
-            id: stableID(prefix: "homework", value: rawID),
+            id: id,
             subject: subject,
             title: title,
             details: HomeworkDescriptionFormatter.plainText(from: details),
             dueDate: due,
             isDone: PronoteJSON.bool(item["TAFFait"]) ?? false,
             priority: .unspecified,
-            attachments: protocolAttachments(from: item)
+            attachments: protocolAttachments(from: item),
+            pronoteID: pronoteID
         )
+    }
+
+    /// Génère un UUID déterministe pour un devoir.
+    /// - Si `pronoteID` est fourni : UUID v5 (namespace DNS) dérivé de "homework:pronote:<accountScope>:<pronoteID>".
+    /// - Sinon : UUID v5 dérivé de la clé métier stable "homework:business:<subjectID>:<jour>:<titleNormalisé>".
+    /// L'`accountScope` (optionnel) permet d'isoler les identifiants PRONOTE entre plusieurs comptes/établissements.
+    /// Cela garantit que le même devoir produit toujours le même UUID,
+    /// indépendamment des variations de description HTML ou de formatage.
+    private static func makeStableHomeworkID(
+        pronoteID: String?,
+        subjectID: UUID,
+        dueDate: Date,
+        title: String,
+        accountScope: String? = nil
+    ) -> UUID {
+        let calendar = Calendar(identifier: .gregorian)
+        let day = calendar.startOfDay(for: dueDate)
+        let dayInterval = day.timeIntervalSince1970
+        let normalizedTitle = title
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        
+        let seed: String
+        if let pronoteID = pronoteID, !pronoteID.isEmpty {
+            if let accountScope = accountScope, !accountScope.isEmpty {
+                seed = "homework:pronote:\(accountScope):\(pronoteID)"
+            } else {
+                seed = "homework:pronote:\(pronoteID)"
+            }
+        } else {
+            seed = "homework:business:\(subjectID.uuidString):\(Int(dayInterval)):\(normalizedTitle)"
+        }
+        
+        // UUID v5 (SHA-1 namespace DNS) — déterministe, stable, sans collision pratique
+        let namespace = UUID(uuidString: "6ba7b810-9dad-11d1-80b4-00c04fd430c8")! // DNS namespace
+        var hasher = SHA1()
+        hasher.update(data: namespace.uuidString.data(using: .ascii)!)
+        hasher.update(data: seed.data(using: .utf8)!)
+        let digest = hasher.finalize()
+        var uuidBytes = Array(digest.prefix(16))
+        uuidBytes[6] = (uuidBytes[6] & 0x0f) | 0x50 // version 5
+        uuidBytes[8] = (uuidBytes[8] & 0x3f) | 0x80 // variant RFC 4122
+        return UUID(uuid: (uuidBytes[0], uuidBytes[1], uuidBytes[2], uuidBytes[3],
+                           uuidBytes[4], uuidBytes[5], uuidBytes[6], uuidBytes[7],
+                           uuidBytes[8], uuidBytes[9], uuidBytes[10], uuidBytes[11],
+                           uuidBytes[12], uuidBytes[13], uuidBytes[14], uuidBytes[15]))
     }
 
     private static func protocolAttachments(

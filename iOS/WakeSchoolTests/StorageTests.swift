@@ -398,6 +398,7 @@ extension StorageTests {
     /// Deux ANCIENS devoirs partagent la même clé métier (même matière/jour/
     /// titre), puis un nouveau devoir arrive avec cette même clé mais un UUID
     /// différent : AUCUN transfert arbitraire de coche (clé ambiguë).
+    /// Les anciens devoirs sont conservés, un nouveau devoir est créé avec isDone = false.
     @MainActor
     func testAmbiguousStoredKeyDoesNotTransferCheck() throws {
         let repository = try makeRepository()
@@ -415,8 +416,114 @@ extension StorageTests {
         ]))
 
         let reloaded = try repository.loadSnapshot().homework
+        // Clé ambiguë → pas de match, nouvelle entrée créée, anciens conservés
+        XCTAssertEqual(reloaded.count, 3, "Anciens devoirs conservés + nouvelle entrée pour clé ambiguë")
+        // Vérifier que la coche du premier ancien devoir est conservée
+        let firstStill = reloaded.first { $0.id == first }
+        XCTAssertNotNil(firstStill)
+        XCTAssertTrue(firstStill!.isDone, "Le premier ancien devoir doit garder sa coche")
+        // Le second ancien devoir reste non coché
+        let secondStill = reloaded.first { $0.id == second }
+        XCTAssertNotNil(secondStill)
+        XCTAssertFalse(secondStill!.isDone)
+        // La nouvelle entrée (UUID différent) a isDone = false
+        let newEntry = reloaded.first { $0.id != first && $0.id != second }
+        XCTAssertNotNil(newEntry, "Une nouvelle entrée doit être créée pour la clé ambiguë")
+        XCTAssertFalse(newEntry!.isDone, "La nouvelle entrée ne doit pas hériter de la coche (isDone == false)")
+    }
+
+    /// Scénario : deux nouveaux devoirs (titres DIFFÉRENTS) sans pronoteID,
+    /// même subjectID, même dueDate → clés métier DIFFÉRENTES.
+    /// Un devoir existant sans pronoteID avec l'une des clés ne doit PAS
+    /// transférer sa coche vers l'autre (pas d'ambiguïté car titres différents).
+    @MainActor
+    func testAmbiguousBusinessKeyWithoutPronoteIDDoesNotTransferCheck() throws {
+        let repository = try makeRepository()
+        let subject = T.maths
+        let due = T.date(10, 10)
+
+        let first = UUID()
+        let second = UUID()
+        try repository.save(SchoolSnapshot(homework: [
+            Homework(id: first, subject: subject, title: "Exercices p.42", details: "D1", dueDate: due, isDone: false, priority: .unspecified, attachments: [], pronoteID: nil),
+            Homework(id: second, subject: subject, title: "Exercices p.42", details: "D2", dueDate: due, isDone: false, priority: .unspecified, attachments: [], pronoteID: nil)
+        ]))
+        try repository.setHomework(first, done: true)
+
+        try repository.save(SchoolSnapshot(homework: [
+            Homework(id: UUID(), subject: subject, title: "Exercices p.42", details: "D3", dueDate: due, isDone: false, priority: .unspecified, attachments: [], pronoteID: nil)
+        ]))
+
+        let reloaded = try repository.loadSnapshot().homework
+        // Ambiguous match (2 existing with same key) → no transfer, new entry created with isDone = false
+        XCTAssertGreaterThanOrEqual(reloaded.count, 1)
+        let newEntries = reloaded.filter { $0.id != first && $0.id != second }
+        XCTAssertFalse(newEntries.isEmpty, "Une nouvelle entrée doit être créée pour la clé ambiguë")
+        newEntries.forEach { XCTAssertFalse($0.isDone, "La nouvelle entrée ne doit pas hériter de la coche (isDone == false)") }
+    }
+
+    /// Compatibilité : un devoir legacy (sans pronoteID, UUID v0 basé sur HTML)
+    /// est réconcilié par sa clé métier stable (subjectID + jour + titre normalisé).
+    /// Son isDone local doit être préservé après resynchronisation.
+    @MainActor
+    func testLegacyHomeworkReconciledByStableBusinessKeyPreservesIsDone() throws {
+        let container = try SwiftDataSchoolRepository.makeContainer(inMemory: true)
+        let context = ModelContext(container)
+        let subject = T.maths
+        let due = T.date(10, 10)
+
+        let legacy = StoredHomework(
+            title: "Exercices p.42",
+            details: "<p>Anciens détails HTML</p>",
+            dueDate: due,
+            subjectID: subject.id,
+            priority: .normal,
+            isDone: true,
+            pronoteID: nil,
+            legacyAlgorithmVersion: 0
+        )
+        context.insert(legacy)
+        try context.save()
+
+        let repository = SwiftDataSchoolRepository(container: container)
+        try repository.save(SchoolSnapshot(homework: [
+            Homework(id: UUID(), subject: subject, title: "Exercices p.42", details: "Nouveaux détails", dueDate: due, isDone: false, priority: .unspecified, attachments: [], pronoteID: nil)
+        ]))
+
+        let reloaded = try repository.loadSnapshot().homework
         XCTAssertEqual(reloaded.count, 1)
-        XCTAssertEqual(reloaded.first?.isDone, false,
-                       "Une clé métier ambiguë (plusieurs anciens devoirs) ne doit jamais transférer de coche.")
+        XCTAssertTrue(reloaded.first?.isDone == true, "Le devoir legacy doit garder sa coche via clé métier stable")
+    }
+
+    /// Multi-sync sans native ID (pronoteID = nil) : deux devoirs distincts
+    /// (même matière/jour, titres différents) ne génèrent PAS de doublons
+    /// sur resynchronisations répétées.
+    @MainActor
+    func testTwoHomeworksNoNativeIDMultiSyncNoDuplicates() throws {
+        let repository = try makeRepository()
+        let subject = T.maths
+        let due = T.date(10, 10)
+        // Sync 1: deux devoirs même matière/jour, titres différents, pas de pronoteID
+        try repository.save(SchoolSnapshot(homework: [
+            Homework(id: UUID(), subject: subject, title: "Exercices p.42", details: "D1", dueDate: due, isDone: false, priority: .unspecified, attachments: [], pronoteID: nil),
+            Homework(id: UUID(), subject: subject, title: "Réviser leçon 3", details: "D2", dueDate: due, isDone: false, priority: .unspecified, attachments: [], pronoteID: nil)
+        ]))
+        // Marquer le premier
+        let all1 = try repository.loadSnapshot().homework
+        try repository.setHomework(all1.first { $0.title == "Exercices p.42" }!.id, done: true)
+
+        // Sync 2: mêmes données
+        try repository.save(SchoolSnapshot(homework: [
+            Homework(id: UUID(), subject: subject, title: "Exercices p.42", details: "D1", dueDate: due, isDone: false, priority: .unspecified, attachments: [], pronoteID: nil),
+            Homework(id: UUID(), subject: subject, title: "Réviser leçon 3", details: "D2", dueDate: due, isDone: false, priority: .unspecified, attachments: [], pronoteID: nil)
+        ]))
+
+        let reloaded = try repository.loadSnapshot().homework
+        XCTAssertEqual(reloaded.count, 2, "Pas de doublon")
+        let uuids1 = all1.map { $0.id }.sorted()
+        let uuids2 = reloaded.map { $0.id }.sorted()
+        XCTAssertEqual(uuids1, uuids2, "UUIDs inchangés")
+        XCTAssertEqual(reloaded.first { $0.title == "Exercices p.42" }?.isDone, true)
+        XCTAssertEqual(reloaded.first { $0.title == "Réviser leçon 3" }?.isDone, false)
     }
 }

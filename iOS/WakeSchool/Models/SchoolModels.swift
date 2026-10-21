@@ -119,6 +119,10 @@ struct Homework: Identifiable, Codable, Hashable {
     var isDone: Bool = false
     var priority: HomeworkPriority = .unspecified
     var attachments: [HomeworkAttachment] = []
+    /// Identifiant natif PRONOTE (champ « N » dans ListeTravauxAFaire).
+    /// Présent uniquement pour les devoirs provenant du protocole PRONOTE.
+    /// Utilisé pour la réconciliation stable entre synchronisations.
+    var pronoteID: String? = nil
 }
 
 struct HomeworkAttachment: Identifiable, Codable, Hashable {

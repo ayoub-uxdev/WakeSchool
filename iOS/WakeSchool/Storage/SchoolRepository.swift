@@ -97,45 +97,131 @@ final class SwiftDataSchoolRepository: SchoolRepository {
     func save(_ snapshot: SchoolSnapshot) throws {
         let stored = try context.fetch(FetchDescriptor<StoredHomework>())
 
+        // Index existants par pronoteID (clé primaire de réconciliation)
+        var storedByPronoteID: [String: StoredHomework] = [:]
+        // Index existants par clé métier stable (subjectID + dueDate + titre normalisé)
+        var storedByBusinessKey: [String: [StoredHomework]] = [:]
+        // Index existants par UUID (pour correspondance exacte et prévention doublons)
+        var storedByID: [UUID: StoredHomework] = [:]
+        // Mémoriser isDone par UUID pour correspondance exacte
         var localDoneByID: [UUID: Bool] = [:]
-        for item in stored { localDoneByID[item.id] = item.isDone }
-
-        var localDoneByKey: [String: Bool] = [:]
-        var storedKeyCounts: [String: Int] = [:]
+        
         for item in stored {
-            let key = Self.businessKey(subjectName: item.subjectName,
-                                       dueDate: item.dueDate,
-                                       title: item.title)
-            storedKeyCounts[key, default: 0] += 1
-            localDoneByKey[key] = item.isDone
-        }
-
-        var incomingKeyCounts: [String: Int] = [:]
-        for homework in snapshot.homework {
-            let key = Self.businessKey(subjectName: homework.subject.name,
-                                       dueDate: homework.dueDate,
-                                       title: homework.title)
-            incomingKeyCounts[key, default: 0] += 1
+            localDoneByID[item.id] = item.isDone
+            storedByID[item.id] = item
+            if let pid = item.pronoteID, !pid.isEmpty {
+                storedByPronoteID[pid] = item
+            }
+            let businessKey = Self.stableBusinessKey(subjectID: item.subjectID, dueDate: item.dueDate, title: item.title)
+            storedByBusinessKey[businessKey, default: []].append(item)
         }
 
         try upsertTimetable(snapshot.timetable)
 
-        try context.delete(model: StoredHomework.self)
-        try context.delete(model: StoredGrade.self)
-        try context.delete(model: StoredAverage.self)
-        try context.delete(model: StoredExam.self)
-        try context.delete(model: StoredEvent.self)
+        // NE PAS supprimer les devoirs existants — upsert uniquement
+        // try context.delete(model: StoredHomework.self)  // SUPPRIMÉ : destructeur
+
+        // Ensemble des pronoteID vus lors de cette sync (pour détection future d'obsolescence)
+        var seenPronoteIDs: Set<String> = []
+        var seenBusinessKeys: Set<String> = []
 
         for homework in snapshot.homework {
-            let key = Self.businessKey(subjectName: homework.subject.name,
-                                       dueDate: homework.dueDate,
-                                       title: homework.title)
-            let localByKey = (incomingKeyCounts[key] == 1 && storedKeyCounts[key] == 1)
-                ? localDoneByKey[key]
-                : nil
-            let done = localDoneByID[homework.id] ?? localByKey ?? homework.isDone
-            context.insert(try StoredHomework(homework, isDone: done))
+            var matched: StoredHomework? = nil
+            var matchType: MatchType = .none
+
+            // 1. Correspondance PRIORITAIRE par pronoteID (ID natif PRONOTE)
+            if let pid = homework.pronoteID, !pid.isEmpty {
+                seenPronoteIDs.insert(pid)
+                if let existing = storedByPronoteID[pid] {
+                    matched = existing
+                    matchType = .pronoteID
+                    // Marquer comme utilisé pour éviter double-match
+                    storedByPronoteID[pid] = nil
+                }
+            }
+
+            // 2. Correspondance SECONDAIRE par clé métier stable (AVEC titre normalisé)
+            // Uniquement si pas de pronoteID ET correspondance NON AMBIGUË (exactement 1 candidat)
+            if matched == nil, homework.pronoteID == nil {
+                let businessKey = Self.stableBusinessKey(subjectID: homework.subject.id, dueDate: homework.dueDate, title: homework.title)
+                seenBusinessKeys.insert(businessKey)
+                var candidates = storedByBusinessKey[businessKey] ?? []
+                // Filtrer les candidats déjà utilisés (matched via UUID ou pronoteID)
+                candidates = candidates.filter { storedByID[$0.id] != nil }
+                if candidates.count == 1 {
+                    matched = candidates[0]
+                    matchType = .businessKeyUnique
+                    // Marquer comme utilisé : retirer de l'index par ID et de la liste
+                    storedByID[matched!.id] = nil
+                    storedByBusinessKey[businessKey] = candidates.filter { $0.id != matched!.id }
+                }
+                // Si 0 ou >1 candidats → pas de match (ambigu ou nouveau)
+            }
+
+            // 3. Correspondance par UUID (données legacy sans pronoteID, clé métier ambiguë)
+            // Ne sert qu'à préserver isDone si le même UUID réapparaît (peu probable)
+            if matched == nil, let existing = storedByID[homework.id] {
+                matched = existing
+                matchType = .uuid
+                // Marquer comme utilisé
+                storedByID[homework.id] = nil
+                // Aussi retirer de l'index par pronoteID si présent
+                if let pid = existing.pronoteID, !pid.isEmpty {
+                    storedByPronoteID[pid] = nil
+                }
+                // Et de l'index par businessKey
+                let bk = Self.stableBusinessKey(subjectID: existing.subjectID, dueDate: existing.dueDate, title: existing.title)
+                storedByBusinessKey[bk] = (storedByBusinessKey[bk] ?? []).filter { $0.id != existing.id }
+            }
+
+            if let matched = matched {
+                // RÉCONCILIATION : préserver l'état local, mettre à jour les champs mutables
+                let preservedIsDone = matched.isDone  // Choix utilisateur gagne toujours
+                let preservedAttachments = matched.attachmentMetadata  // Pièces jointes locales conservées
+                
+                // Mettre à jour les champs mutables venant de PRONOTE
+                matched.title = homework.title
+                matched.details = homework.details
+                matched.dueDate = homework.dueDate
+                matched.priorityRaw = homework.priority.rawValue
+                matched.pronoteID = homework.pronoteID  // Mettre à jour si nouvellement dispo
+                matched.legacyAlgorithmVersion = 1
+                matched.lastSyncedAt = Date()
+                
+                // Fusionner les pièces jointes : PRONOTE (avec protocolID) + locales (sans protocolID)
+                if let incomingAttachmentsData = try? JSONEncoder().encode(homework.attachments),
+                   let incomingAttachments = try? JSONDecoder().decode([HomeworkAttachment].self, from: incomingAttachmentsData),
+                   let existingAttachmentsData = preservedAttachments,
+                   let existingAttachments = try? JSONDecoder().decode([HomeworkAttachment].self, from: existingAttachmentsData) {
+                    
+                    let incomingPronote = incomingAttachments.filter { !$0.protocolID.isEmpty }
+                    let existingLocal = existingAttachments.filter { $0.protocolID.isEmpty }
+                    let merged = incomingPronote + existingLocal
+                    matched.attachmentMetadata = try JSONEncoder().encode(merged)
+                } else if let incomingAttachmentsData = try? JSONEncoder().encode(homework.attachments) {
+                    // Pas d'attachments existants → prendre les entrants
+                    matched.attachmentMetadata = incomingAttachmentsData
+                }
+                // Sinon : conserver les existants (préservation par défaut)
+                
+                matched.isDone = preservedIsDone
+                
+            } else {
+                // NOUVEAU devoir : vérifier d'abord si un devoir avec le même UUID existe déjà
+                // (protection ceinture-et-bretelles contre les doublons)
+                if storedByID[homework.id] != nil {
+                    // Ce cas ne devrait pas arriver car géré à l'étape 3, mais par sécurité
+                    // On ne crée pas de doublon
+                    continue
+                }
+                // Insérer avec isDone depuis PRONOTE (défaut false)
+                context.insert(try StoredHomework(homework, isDone: homework.isDone))
+            }
         }
+
+        // NE PAS SUPPRIMER les devoirs non revus — ils peuvent être hors fenêtre PRONOTE
+        // Optionnel futur : marquer comme obsolètes après N syncs sans les voir (via lastSyncedAt)
+
         snapshot.grades.forEach { context.insert(StoredGrade($0)) }
         snapshot.averages.forEach { context.insert(StoredAverage($0)) }
         snapshot.exams.forEach { context.insert(StoredExam($0)) }
@@ -143,6 +229,33 @@ final class SwiftDataSchoolRepository: SchoolRepository {
 
         try markPeriodsCovered(by: snapshot.timetable)
         try context.save()
+    }
+
+    /// Type de correspondance utilisé pour la réconciliation (diagnostic/test).
+    private enum MatchType { case pronoteID, businessKeyUnique, uuid, none }
+
+    /// Clé métier stable pour réconciliation SANS identifiant natif.
+    /// Basée sur subjectID + dueDate (jour) + titre normalisé.
+    /// Le titre est inclus pour distinguer deux devoirs distincts même jour/matière,
+    /// et pour aligner la clé de réconciliation avec la génération d'UUID (PronoteMapper.makeStableHomeworkID).
+    /// Deux devoirs même matière + même jour + même titre = clé identique → réconciliation possible si unique.
+    /// Deux devoirs même matière + même jour + titres différents = clés différentes → pas de fusion arbitraire.
+    static func stableBusinessKey(subjectID: UUID, dueDate: Date, title: String) -> String {
+        let day = Calendar(identifier: .gregorian).startOfDay(for: dueDate).timeIntervalSince1970
+        let normalizedTitle = title
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        return "\(subjectID.uuidString)|\(Int(day))|\(normalizedTitle)"
+    }
+
+    /// Clé métier LEGACY (avec titre) — conservée pour compatibilité tests existants.
+    /// NE PLUS UTILISER pour nouvelle réconciliation.
+    static func businessKey(subjectName: String, dueDate: Date, title: String) -> String {
+        let normalizedSubject = subjectName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let day = Calendar(identifier: .gregorian).startOfDay(for: dueDate).timeIntervalSince1970
+        return "\(normalizedSubject)|\(day)|\(normalizedTitle)"
     }
 
     /// Fusion ciblée de l'emploi du temps pour une période donnée.

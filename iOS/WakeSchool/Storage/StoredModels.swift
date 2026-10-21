@@ -73,6 +73,14 @@ final class StoredHomework {
     var isDone: Bool
     var priorityRaw: Int
     var attachmentMetadata: Data?
+    /// Identifiant natif PRONOTE (champ « N ») pour réconciliation stable.
+    var pronoteID: String?
+    /// Version de l'algorithme de génération d'UUID :
+    /// 0 = ancien (incluait details dans le hash), 1 = nouveau (basé sur pronoteID ou clé métier stable).
+    var legacyAlgorithmVersion: Int = 0
+    /// Date de dernière synchronisation où ce devoir a été vu.
+    /// Permet un nettoyage futur des devoirs obsolètes.
+    var lastSyncedAt: Date?
 
     init(_ homework: Homework, isDone: Bool) throws {
         id = homework.id
@@ -84,6 +92,9 @@ final class StoredHomework {
         self.isDone = isDone
         priorityRaw = homework.priority.rawValue
         attachmentMetadata = try JSONEncoder().encode(homework.attachments)
+        pronoteID = homework.pronoteID
+        legacyAlgorithmVersion = 1
+        lastSyncedAt = Date()
     }
 
     func homework() throws -> Homework {
@@ -98,7 +109,8 @@ final class StoredHomework {
             dueDate: dueDate,
             isDone: isDone,
             priority: HomeworkPriority(rawValue: priorityRaw) ?? .unspecified,
-            attachments: attachments
+            attachments: attachments,
+            pronoteID: pronoteID
         )
     }
 }

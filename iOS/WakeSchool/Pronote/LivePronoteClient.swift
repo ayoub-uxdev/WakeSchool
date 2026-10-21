@@ -470,7 +470,7 @@ final class LivePronoteClient: PronoteClient, PronoteDataDiagnosticsReporting {
             weekRange: weekRange
         )
 
-        let result = PronoteMapper.homework(from: response)
+        let result = PronoteMapper.homework(from: response, accountScope: credentials.accountScope)
         dataDiagnostics.homework.callStatus = .succeeded
         dataDiagnostics.homework.rawCount = PronoteMapper.rawHomeworkCount(from: response)
         dataDiagnostics.homework.convertedCount = result.count

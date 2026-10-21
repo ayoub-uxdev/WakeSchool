@@ -467,4 +467,158 @@ final class PronoteMapperTests: XCTestCase {
 
         XCTAssertEqual(selected?["N"] as? String, "synthetic-student-1")
     }
+
+    // MARK: - LOT A : Persistance isDone & réconciliation robuste (PronoteMapper)
+
+    /// Chemin protocole : extraction du champ "N" (ID natif PRONOTE)
+    /// et génération d'UUID déterministe (UUID v5) depuis ce pronoteID.
+    func testProtocolHomeworkExtractsNativeIDAndGeneratesStableUUID() throws {
+        let response: [String: Any] = [
+            "dataSec": [
+                "data": [
+                    "ListeTravauxAFaire": [
+                        "V": [[
+                            "N": "hw-protocol-123",
+                            "PourLe": ["V": "15/10/2026"],
+                            "Matiere": ["V": ["G": 16, "N": "maths", "L": "Mathématiques"]],
+                            "titre": "Exercices p.42",
+                            "descriptif": "Faire les exercices",
+                            "TAFFait": 0,
+                            "ListePieceJointe": ["V": []]
+                        ]]
+                    ]
+                ]
+            ]
+        ]
+
+        let homeworks = PronoteMapper.homework(from: response)
+        XCTAssertEqual(homeworks.count, 1)
+        let hw = try XCTUnwrap(homeworks.first)
+        XCTAssertEqual(hw.pronoteID, "hw-protocol-123", "Champ 'N' extrait comme pronoteID")
+        let hw2 = PronoteMapper.homework(from: response).first!
+        XCTAssertEqual(hw.id, hw2.id, "UUID deterministe via pronoteID (UUID v5)")
+    }
+
+    /// Chemin fallback : extraction du champ "N" quand present,
+    /// coherence avec le chemin protocole (meme UUID pour meme pronoteID).
+    func testFallbackHomeworkExtractsNativeIDAndMatchesProtocolUUID() throws {
+        let response: [String: Any] = [
+            "dataSec": [
+                "data": [
+                    "someKey": [
+                        "N": "hw-fallback-456",
+                        "datePour": "15/10/2026",
+                        "matiere": ["G": 16, "N": "maths", "L": "Mathematiques"],
+                        "titre": "Devoir fallback",
+                        "description": "Description fallback",
+                        "fait": false
+                    ]
+                ]
+            ]
+        ]
+
+        let homeworks = PronoteMapper.homework(from: response)
+        XCTAssertEqual(homeworks.count, 1)
+        let hw = try XCTUnwrap(homeworks.first)
+        XCTAssertEqual(hw.pronoteID, "hw-fallback-456", "Champ 'N' extrait en fallback")
+
+        // Coherence : meme pronoteID -> meme UUID que chemin protocole
+        let protocolResponse: [String: Any] = [
+            "dataSec": [
+                "data": [
+                    "ListeTravauxAFaire": [
+                        "V": [[
+                            "N": "hw-fallback-456",
+                            "PourLe": ["V": "15/10/2026"],
+                            "Matiere": ["V": ["G": 16, "N": "maths", "L": "Mathematiques"]],
+                            "titre": "Devoir fallback",
+                            "descriptif": "Description fallback",
+                            "TAFFait": 0,
+                            "ListePieceJointe": ["V": []]
+                        ]]
+                    ]
+                ]
+            ]
+        ]
+        let hwProtocol = PronoteMapper.homework(from: protocolResponse).first!
+        XCTAssertEqual(hw.id, hwProtocol.id, "Meme pronoteID = meme UUID (coherence 2 chemins)")
+    }
+
+    /// Sans ID natif : UUID base sur cle metier stable (subjectID + jour + titre normalise),
+    /// sans inclure le details (HTML volatile).
+    func testHomeworkWithoutNativeIDUsesStableBusinessKey() throws {
+        let response: [String: Any] = [
+            "dataSec": [
+                "data": [
+                    "someKey": [
+                        "datePour": "15/10/2026",
+                        "matiere": ["G": 16, "N": "maths", "L": "Mathematiques"],
+                        "titre": "Devoir sans ID natif",
+                        "description": "Description v1",
+                        "fait": false
+                    ]
+                ]
+            ]
+        ]
+
+        let hw1 = PronoteMapper.homework(from: response).first!
+        let responseV2: [String: Any] = [
+            "dataSec": [
+                "data": [
+                    "someKey": [
+                        "datePour": "15/10/2026",
+                        "matiere": ["G": 16, "N": "maths", "L": "Mathematiques"],
+                        "titre": "Devoir sans ID natif",
+                        "description": "<div><p>HTML <em>totalement</em> different</p></div>",
+                        "fait": false
+                    ]
+                ]
+            ]
+        ]
+        let hw2 = PronoteMapper.homework(from: responseV2).first!
+
+        XCTAssertNil(hw1.pronoteID, "Pas d'ID natif -> pronoteID = nil")
+        XCTAssertEqual(hw1.id, hw2.id, "UUID stable via cle metier (subjectID + jour + titre) sans details")
+        XCTAssertEqual(hw1.title, hw2.title)
+    }
+
+    /// Deux devoirs meme matiere, meme jour, titres differents -> UUIDs differents.
+    func testTwoHomeworksSameSubjectSameDateDifferentTitlesHaveDifferentUUIDs() throws {
+        let response: [String: Any] = [
+            "dataSec": [
+                "data": [
+                    "someKey": [
+                        "V": [
+                            ["datePour": "15/10/2026", "matiere": ["G": 16, "N": "maths", "L": "Mathematiques"], "titre": "Exercices p.42", "description": "D1", "fait": false],
+                            ["datePour": "15/10/2026", "matiere": ["G": 16, "N": "maths", "L": "Mathematiques"], "titre": "Reviser lecon 3", "description": "D2", "fait": false]
+                        ]
+                    ]
+                ]
+            ]
+        ]
+
+        let homeworks = PronoteMapper.homework(from: response)
+        XCTAssertEqual(homeworks.count, 2)
+        XCTAssertNotEqual(homeworks[0].id, homeworks[1].id, "Titres differents -> UUIDs differents")
+    }
+
+    /// Sans ID natif, meme matiere + meme jour + meme titre -> meme UUID (cle metier).
+    /// C'est le comportement attendue : reconciliation possible si cle metier NON ambigue.
+    func testTwoHomeworksSameSubjectSameDateSameTitleWithoutNativeIDShareUUID() throws {
+        let response: [String: Any] = [
+            "dataSec": [
+                "data": [
+                    "someKey": [
+                        "V": [
+                            ["datePour": "15/10/2026", "matiere": ["G": 16, "N": "maths", "L": "Mathematiques"], "titre": "Exercices p.42", "description": "D1", "fait": false],
+                            ["datePour": "15/10/2026", "matiere": ["G": 16, "N": "maths", "L": "Mathematiques"], "titre": "Exercices p.42", "description": "D2", "fait": false]
+                        ]
+                    ]
+                ]
+            ]
+        ]
+
+        let homeworks = PronoteMapper.homework(from: response)
+        XCTAssertEqual(homeworks.count, 1, "Cle metier identiques -> un seul UUID (deduplication)")
+    }
 }

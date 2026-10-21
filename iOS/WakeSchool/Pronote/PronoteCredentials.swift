@@ -1,4 +1,4 @@
-import Foundation
+﻿import Foundation
 
 enum PronoteAccountKind: Int, Codable, CaseIterable, Hashable, Identifiable {
     case student = 6
@@ -85,4 +85,7 @@ struct PronoteCredentials: Codable, Equatable, CustomStringConvertible {
     var description: String {
         "PronoteCredentials(serverURL: \(serverURL), username: \(username), password: ***, usesMobileToken: \(usesMobileToken), mobileUUID: \(mobileUUID != nil ? "configured" : "nil"))"
     }
+    /// Portée de compte pour isoler les identifiants PRONOTE (ex: champ 'N') entre plusieurs comptes/établissements.
+    /// Combine serverURL + username + accountKind pour garantir l'unicité.
+    var accountScope: String { "\(serverURL)|\(username)|\(accountKind.rawValue)" }
 }
