@@ -1,0 +1,82 @@
+[1mdiff --git a/iOS/WakeSchool/App/SchoolDataStore.swift b/iOS/WakeSchool/App/SchoolDataStore.swift[m
+[1mindex e54ce7a..a765368 100644[m
+[1m--- a/iOS/WakeSchool/App/SchoolDataStore.swift[m
+[1m+++ b/iOS/WakeSchool/App/SchoolDataStore.swift[m
+[36m@@ -21,6 +21,13 @@[m [mfinal class SchoolDataStore: ObservableObject {[m
+         widgetOpenTimetable = true[m
+     }[m
+ [m
+[32m+[m[32m    /// Acquitte la demande de navigation depuis le widget : réinitialise le[m
+[32m+[m[32m    /// drapeau après consommation par l'UI (RootView). Le setter reste privé[m
+[32m+[m[32m    /// pour éviter toute modification externe non maîtrisée.[m
+[32m+[m[32m    func acknowledgeWidgetOpenTimetableRequest() {[m
+[32m+[m[32m        widgetOpenTimetable = false[m
+[32m+[m[32m    }[m
+[32m+[m
+     // Absences et retards : état et erreur INDÉPENDANTS du cache scolaire.[m
+     @Published private(set) var attendance: [AttendanceEvent] = [][m
+     @Published private(set) var isSyncingAttendance = false[m
+[36m@@ -260,8 +267,17 @@[m [mfinal class SchoolDataStore: ObservableObject {[m
+             }[m
+         }[m
+ [m
+[32m+[m[32m        let periods: [SchoolPeriod]?[m
+[32m+[m[32m        do {[m
+[32m+[m[32m            periods = try environment.repository.loadPeriods()[m
+[32m+[m[32m        } catch {[m
+[32m+[m[32m            periods = nil[m
+[32m+[m[32m            errorMessage = "Les périodes scolaires sont temporairement indisponibles. Le réveil automatique est conservé."[m
+[32m+[m[32m        }[m
+[32m+[m
+         await environment.notifications.processAfterSync([m
+             entries: snapshot.timetable,[m
+[32m+[m[32m            periods: periods,[m
+             snapshot: snapshot,[m
+             knownGradeIDs: knownGrades,[m
+             knownExamIDs: knownExams,[m
+[1mdiff --git a/iOS/WakeSchool/UI/RootView.swift b/iOS/WakeSchool/UI/RootView.swift[m
+[1mindex 3a42e16..a1f58c0 100644[m
+[1m--- a/iOS/WakeSchool/UI/RootView.swift[m
+[1m+++ b/iOS/WakeSchool/UI/RootView.swift[m
+[36m@@ -25,7 +25,7 @@[m [mstruct RootView: View {[m
+         .onChange(of: dataStore.widgetOpenTimetable) { _, newValue in[m
+             if newValue {[m
+                 selectedTab = 1[m
+[31m-                dataStore.widgetOpenTimetable = false[m
+[32m+[m[32m                dataStore.acknowledgeWidgetOpenTimetableRequest()[m
+             }[m
+         }[m
+     }[m
+[1mdiff --git a/iOS/WakeSchoolTests/NotificationTests.swift b/iOS/WakeSchoolTests/NotificationTests.swift[m
+[1mindex 2dd360d..8308a8f 100644[m
+[1m--- a/iOS/WakeSchoolTests/NotificationTests.swift[m
+[1m+++ b/iOS/WakeSchoolTests/NotificationTests.swift[m
+[36m@@ -261,6 +261,7 @@[m [mfinal class NotificationTests: XCTestCase {[m
+             start: date(17, 8, 0), end: date(17, 9, 0))][m
+ [m
+         await orchestrator.processAfterSync(entries: entries,[m
+[32m+[m[32m                                            periods: nil,[m
+                                             snapshot: SchoolSnapshot(timetable: entries),[m
+                                             knownGradeIDs: [], knownExamIDs: [],[m
+                                             wakeAlarmEnabled: false,[m
+[36m@@ -270,6 +271,7 @@[m [mfinal class NotificationTests: XCTestCase {[m
+         XCTAssertTrue(confirmation.id.hasPrefix("wake.confirm."))[m
+         // Re-process immédiat (nouvelle sync) : même identifiant → remplacement, pas de doublon.[m
+         await orchestrator.processAfterSync(entries: entries,[m
+[32m+[m[32m                                            periods: nil,[m
+                                             snapshot: SchoolSnapshot(timetable: entries),[m
+                                             knownGradeIDs: [], knownExamIDs: [],[m
+                                             wakeAlarmEnabled: false,[m
+[36m@@ -288,10 +290,11 @@[m [mfinal class NotificationTests: XCTestCase {[m
+                                                     center: NotificationCenterStore(defaults: defaults),[m
+                                                     rules: NotificationRulesStore(defaults: defaults),[m
+                                                     preferences: preferences)[m
+[31m-        let entries: [TimetableEntry] = [TimetableEntry([m
+[32m+[m[32m        let entries: [TimetableEntry] = [[m
+             id: UUID(), subject: Subject(id: UUID(), name: "Maths"), teacher: nil, room: nil,[m
+             start: date(17, 8, 0), end: date(17, 9, 0))][m
+         await orchestrator.processAfterSync(entries: entries,[m
+[32m+[m[32m                                            periods: nil,[m
+                                             snapshot: SchoolSnapshot(timetable: entries),[m
+                                             knownGradeIDs: [], knownExamIDs: [],[m
+                                             wakeAlarmEnabled: false,[m

@@ -1,0 +1,274 @@
+﻿diff --git a/iOS/WakeSchool/Pronote/PronoteMapper.swift b/iOS/WakeSchool/Pronote/PronoteMapper.swift
+index 61cc9f9..bc56d86 100644
+--- a/iOS/WakeSchool/Pronote/PronoteMapper.swift
++++ b/iOS/WakeSchool/Pronote/PronoteMapper.swift
+@@ -84,6 +84,146 @@ enum PronoteMapper {
+         return []
+     }
+ 
++    // MARK: - Absences et retards
++
++    /// Convertit une réponse « Presence » PRONOTE en évènements de vie scolaire.
++    ///
++    /// Le contrat EXACT (nom de fonction, onglet, clés) n'a pas pu être vérifié
++    /// hors ligne : le parsing est donc volontairement tolérant et multi-clés,
++    /// dans l'esprit des autres mappings. Aucune donnée n'est inventée : seuls
++    /// les champs réellement présents sont lus.
++    static func attendance(from response: Any) -> [AttendanceEvent] {
++        let root = PronoteJSON.unwrap(response)
++        let absences = protocolItems(from: response, keys: ["listeAbsences", "ListeAbsences", "absences"])
++            ?? attendanceList(in: root, keys: ["listeAbsences", "ListeAbsences", "absences"])
++        let delays = protocolItems(from: response, keys: ["listeRetards", "ListeRetards", "retards"])
++            ?? attendanceList(in: root, keys: ["listeRetards", "ListeRetards", "retards"])
++
++        var result: [AttendanceEvent] = []
++        result.append(contentsOf: absences.compactMap { absence($0) })
++        result.append(contentsOf: delays.compactMap { delay($0) })
++
++        var seen = Set<UUID>()
++        return result
++            .filter { seen.insert($0.id).inserted }
++            .sorted { $0.start > $1.start }
++    }
++
++    private static func attendanceList(in root: Any, keys: [String]) -> [[String: Any]]? {
++        if let found = recursivelyFindDictionary(root, keys: keys) {
++            for key in keys {
++                if let array = found[key] as? [[String: Any]] { return array }
++                if let wrapped = found[key] as? [String: Any],
++                   let array = wrapped["V"] as? [[String: Any]] {
++                    return array
++                }
++            }
++        }
++        return nil
++    }
++
++    private static func absence(_ item: [String: Any]) -> AttendanceEvent? {
++        let start = dateTime(
++            from: item,
++            dateKeys: ["dateDeb", "DateDebut", "dateDebut", "debut", "date"],
++            timeKeys: ["heureDeb", "heureDebut"]
++        ) ?? PronoteJSON.date(findValue(in: item, keys: ["dateDeb", "DateDebut", "dateDebut", "debut", "date"]))
++        guard let start else { return nil }
++
++        let end = dateTime(
++            from: item,
++            dateKeys: ["dateFin", "DateFin", "dateFin", "fin"],
++            timeKeys: ["heureFin"]
++        ) ?? PronoteJSON.date(findValue(in: item, keys: ["dateFin", "DateFin", "dateFin", "fin"]))
++
++        let rawID = extractID(item) ?? "absence|\(start.timeIntervalSince1970)|\(end?.timeIntervalSince1970 ?? 0)"
++        let id = stableID(prefix: "attendance", value: rawID)
++        let duration = minutesDuration(from: item) ?? end.map { Int($0.timeIntervalSince(start) / 60) }
++        let isJustified = PronoteJSON.bool(findValue(in: item, keys: ["justifie", "justifiee", "estJustifie", "justified"])) ?? false
++
++        return AttendanceEvent(
++            id: id,
++            kind: .absence,
++            start: start,
++            end: end,
++            durationMinutes: duration,
++            isJustified: isJustified,
++            justification: PronoteJSON.string(findValue(in: item, keys: ["justification", "commentaire"])),
++            reasons: reasons(from: item),
++            subjectName: extractName(findValue(in: item, keys: ["matiere", "Matiere", "service"]))
++        )
++    }
++
++    private static func delay(_ item: [String: Any]) -> AttendanceEvent? {
++        let start = dateTime(
++            from: item,
++            dateKeys: ["date", "Date", "dateDeb", "DateDebut"],
++            timeKeys: ["heure", "heureDeb", "heureDebut"]
++        ) ?? PronoteJSON.date(findValue(in: item, keys: ["date", "Date", "dateDeb", "DateDebut"]))
++        guard let start else { return nil }
++
++        let rawID = extractID(item) ?? "retard|\(start.timeIntervalSince1970)"
++        let id = stableID(prefix: "attendance", value: rawID)
++        let duration = minutesDuration(from: item)
++            ?? PronoteJSON.number(findValue(in: item, keys: ["minutes", "nbMinutes"])).map { Int($0.rounded()) }
++        let isJustified = PronoteJSON.bool(findValue(in: item, keys: ["justifie", "justifiee", "estJustifie", "justified"])) ?? false
++
++        return AttendanceEvent(
++            id: id,
++            kind: .delay,
++            start: start,
++            end: nil,
++            durationMinutes: duration,
++            isJustified: isJustified,
++            justification: PronoteJSON.string(findValue(in: item, keys: ["justification", "commentaire", "motif"])),
++            reasons: reasons(from: item),
++            subjectName: extractName(findValue(in: item, keys: ["matiere", "Matiere", "service"]))
++        )
++    }
++
++    /// Durée en minutes : nombre de minutes direct, ou durée horaire (« 2h », « 1,5 »).
++    private static func minutesDuration(from item: [String: Any]) -> Int? {
++        if let minutes = PronoteJSON.number(findValue(in: item, keys: ["minutes", "nbMinutes", "dureeMinutes"])) {
++            return Int(minutes.rounded())
++        }
++        guard let raw = PronoteJSON.string(findValue(in: item, keys: ["duree", "hours", "heures", "nbHeures"])) else {
++            return nil
++        }
++        return parseHourDuration(raw)
++    }
++
++    private static func parseHourDuration(_ raw: String) -> Int? {
++        let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
++            .replacingOccurrences(of: ",", with: ".")
++            .replacingOccurrences(of: " ", with: "")
++        if let value = PronoteJSON.number(cleaned) {
++            // Valeur décimale interprétée en heures (ex. « 1,5 » => 90 min).
++            return Int((value * 60).rounded())
++        }
++        guard let hourRange = cleaned.range(of: #"^(\d+)h"#, options: .regularExpression) else { return nil }
++        guard let hours = Int(cleaned[hourRange].replacingOccurrences(of: "h", with: "")) else { return nil }
++        let minutePart = cleaned[hourRange.upperBound...].prefix { $0.isNumber }
++        return hours * 60 + (Int(minutePart) ?? 0)
++    }
++
++    /// Motifs : chaîne simple, ou liste de libellés/dictionnaires PRONOTE.
++    private static func reasons(from item: [String: Any]) -> [String] {
++        let value = findValue(in: item, keys: ["motifs", "listeMotifs", "Motifs", "reasons"])
++        if let list = value as? [[String: Any]] {
++            return list.compactMap { extractName($0) ?? PronoteJSON.string($0["L"]) }
++        }
++        if let list = value as? [String] {
++            return list
++        }
++        if let wrapped = value as? [String: Any], let list = wrapped["V"] as? [[String: Any]] {
++            return list.compactMap { extractName($0) ?? PronoteJSON.string($0["L"]) }
++        }
++        if let single = PronoteJSON.string(value), !single.isEmpty {
++            return [single]
++        }
++        return []
++    }
++
+     static func schoolYearStart(from response: Any) -> Date? {
+         let root = PronoteJSON.unwrap(response)
+         guard let general = PronoteJSON.recursivelyFindDictionary(
+diff --git a/iOS/WakeSchool/Pronote/PronoteSessionClient.swift b/iOS/WakeSchool/Pronote/PronoteSessionClient.swift
+index 26f2443..3e6babd 100644
+--- a/iOS/WakeSchool/Pronote/PronoteSessionClient.swift
++++ b/iOS/WakeSchool/Pronote/PronoteSessionClient.swift
+@@ -216,6 +216,44 @@ final class PronoteSessionClient {
+         )
+     }
+ 
++    /// Absences et retards de l'élève pour une période scolaire.
++    ///
++    /// Le contrat serveur exact n'a pas pu être vérifié hors ligne ; on suit la
++    /// fonction documentée par pronotepy (« Presence », onglet vie scolaire) avec
++    /// la même signature par ressource que les autres appels. Toute divergence
++    /// serveur se manifestera par une erreur propagée, sans effet sur le cache.
++    func presence(
++        period: [String: Any],
++        resource: [String: Any]
++    ) async throws -> Any {
++        let signature = try Self.signature(onglet: 88, resource: resource)
++        guard let periodID = period["N"],
++              let periodName = period["L"] else {
++            throw PronoteSessionError.invalidPeriod
++        }
++        let properties = PronoteAPIProperties.forVersion(session.version)
++        let payload: [String: Any] = [
++            properties.data: [
++                "Periode": [
++                    "N": periodID,
++                    "L": periodName
++                ],
++                "PeriodeAbsences": [
++                    "N": periodID,
++                    "L": periodName
++                ],
++                "avecEleve": true,
++                "avecRessource": false
++            ],
++            Self.signatureKey(for: session.version): signature
++        ]
++
++        return try await request(
++            function: "Presence",
++            data: payload
++        )
++    }
++
+     func downloadHomeworkAttachment(
+         _ attachment: HomeworkAttachment
+     ) async throws -> Data {
+diff --git a/iOS/WakeSchool/Pronote/UnavailablePronoteClient.swift b/iOS/WakeSchool/Pronote/UnavailablePronoteClient.swift
+index 7e654ce..222a084 100644
+--- a/iOS/WakeSchool/Pronote/UnavailablePronoteClient.swift
++++ b/iOS/WakeSchool/Pronote/UnavailablePronoteClient.swift
+@@ -15,4 +15,5 @@ struct UnavailablePronoteClient: PronoteClient {
+     func getTimetable() async throws -> [TimetableEntry] { throw PronoteError.notImplemented }
+     func getHomework() async throws -> [Homework] { throw PronoteError.notImplemented }
+     func getGrades() async throws -> [Grade] { throw PronoteError.notImplemented }
++    func getAttendance() async throws -> [AttendanceEvent] { throw PronoteError.notImplemented }
+ }
+diff --git a/iOS/WakeSchool/Storage/SchoolRepository.swift b/iOS/WakeSchool/Storage/SchoolRepository.swift
+index 14d1444..5568c51 100644
+--- a/iOS/WakeSchool/Storage/SchoolRepository.swift
++++ b/iOS/WakeSchool/Storage/SchoolRepository.swift
+@@ -9,6 +9,10 @@ protocol SchoolRepository {
+     func save(_ snapshot: SchoolSnapshot) throws
+     func setHomework(_ id: UUID, done: Bool) throws
+     func clear() throws
++    /// Absences et retards stockés localement (les plus récents d'abord).
++    func loadAttendance() throws -> [AttendanceEvent]
++    /// Remplace uniquement les absences et retards locaux (indépendant du cache scolaire).
++    func saveAttendance(_ events: [AttendanceEvent]) throws
+ }
+ 
+ @MainActor
+@@ -21,7 +25,8 @@ final class SwiftDataSchoolRepository: SchoolRepository {
+ 
+     static func makeContainer(inMemory: Bool = false) throws -> ModelContainer {
+         let schema = Schema([StoredCourse.self, StoredHomework.self, StoredGrade.self,
+-                             StoredAverage.self, StoredExam.self, StoredEvent.self])
++                             StoredAverage.self, StoredExam.self, StoredEvent.self,
++                             StoredAttendanceEvent.self])
+         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: inMemory)
+         return try ModelContainer(for: schema, configurations: [configuration])
+     }
+@@ -34,10 +39,29 @@ final class SwiftDataSchoolRepository: SchoolRepository {
+             averages: try context.fetch(FetchDescriptor<StoredAverage>()).map { $0.subjectAverage }
+                 .sorted { $0.subject.name < $1.subject.name },
+             exams: try context.fetch(FetchDescriptor<StoredExam>()).map { $0.exam }.sorted { $0.date < $1.date },
+-            events: try context.fetch(FetchDescriptor<StoredEvent>()).map { $0.event }.sorted { $0.start < $1.start }
++            events: try context.fetch(FetchDescriptor<StoredEvent>()).map { $0.event }.sorted { $0.start < $1.start },
++            attendance: try loadAttendance()
+         )
+     }
+ 
++    // MARK: - Absences et retards (persistance indépendante du cache scolaire)
++
++    /// Absences et retards stockés localement, triés du plus récent au plus ancien.
++    func loadAttendance() throws -> [AttendanceEvent] {
++        try context.fetch(FetchDescriptor<StoredAttendanceEvent>())
++            .map { $0.event }
++            .sorted { $0.start > $1.start }
++    }
++
++    /// Remplace uniquement les absences et retards locaux.
++    /// Volontairement indépendant de `save(_:)` : une synchronisation scolaire
++    /// (cours, devoirs, notes) n'écrase jamais la vie scolaire, et inversement.
++    func saveAttendance(_ events: [AttendanceEvent]) throws {
++        try context.delete(model: StoredAttendanceEvent.self)
++        events.forEach { context.insert(StoredAttendanceEvent($0)) }
++        try context.save()
++    }
++
+     func save(_ snapshot: SchoolSnapshot) throws {
+         var localDone: [UUID: Bool] = [:]
+         for stored in try context.fetch(FetchDescriptor<StoredHomework>()) {
+@@ -69,6 +93,7 @@ final class SwiftDataSchoolRepository: SchoolRepository {
+ 
+     func clear() throws {
+         try deleteAll()
++        try context.delete(model: StoredAttendanceEvent.self)
+         try context.save()
+     }
+ 

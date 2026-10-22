@@ -701,7 +701,7 @@ enum PronoteMapper {
         
         // UUID v5 (SHA-1 namespace DNS) — déterministe, stable, sans collision pratique
         let namespace = UUID(uuidString: "6ba7b810-9dad-11d1-80b4-00c04fd430c8")! // DNS namespace
-        var hasher = SHA1()
+        var hasher = Insecure.SHA1()
         hasher.update(data: namespace.uuidString.data(using: .ascii)!)
         hasher.update(data: seed.data(using: .utf8)!)
         let digest = hasher.finalize()

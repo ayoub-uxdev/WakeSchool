@@ -7,13 +7,13 @@ on:
 
 jobs:
   build:
-    runs-on: xcode-27
+    runs-on: macos-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Vérifier Xcode 27
+      - name: Vérifier la version de Xcode
         run: |
           xcode-select -p
           xcodebuild -version
@@ -28,7 +28,11 @@ jobs:
           ls -la
           test -f WakeSchool.xcodeproj/project.pbxproj
 
-      - name: Compiler avec Xcode 27 (sans signature)
+      - name: Résoudre les dépendances SPM
+        working-directory: iOS
+        run: xcodebuild -resolvePackageDependencies -project WakeSchool.xcodeproj -scheme WakeSchool
+
+      - name: Compiler (sans signature)
         working-directory: iOS
         run: |
           set -o pipefail
