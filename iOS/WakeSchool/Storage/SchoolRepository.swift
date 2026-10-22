@@ -356,18 +356,6 @@ final class SwiftDataSchoolRepository: SchoolRepository {
         try context.save()
     }
 
-    /// Identité métier stable d'un devoir, indépendante de l'identifiant
-    /// technique PRONOTE : même matière, même échéance (au jour), même titre.
-    /// Volontairement prudemment : deux devoirs distincts avec des titres
-    /// différents ne partagent JAMAIS de clé (aucun transfert de coche entre
-    /// devoirs simplement semblables).
-    static func businessKey(subjectName: String, dueDate: Date, title: String) -> String {
-        let normalizedSubject = subjectName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let day = Calendar(identifier: .gregorian).startOfDay(for: dueDate).timeIntervalSince1970
-        return "\(normalizedSubject)|\(day)|\(normalizedTitle)"
-    }
-
     private func deleteAll() throws {
         try context.delete(model: StoredCourse.self)
         try context.delete(model: StoredHomework.self)
